@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16.4
+    container_name: ticketforge-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ticketforge}
+      POSTGRES_USER: ${POSTGRES_USER:-ticketforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ticketforge_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ticketforge-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketforge
+
+  redis:
+    image: redis:7.2.5
+    container_name: ticketforge-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ticketforge-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ticketforge
+
+  adminer:
+    image: adminer:4.8.1
+    container_name: ticketforge-adminer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    networks:
+      - ticketforge
+
+volumes:
+  ticketforge-postgres-data:
+  ticketforge-redis-data:
+
+networks:
+  ticketforge:
+    driver: bridge
+
