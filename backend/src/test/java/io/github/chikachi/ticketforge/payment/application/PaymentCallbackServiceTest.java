@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -15,6 +16,7 @@ import io.github.chikachi.ticketforge.event.domain.EventEntity;
 import io.github.chikachi.ticketforge.event.domain.EventStatus;
 import io.github.chikachi.ticketforge.event.domain.TicketTierEntity;
 import io.github.chikachi.ticketforge.inventory.infrastructure.TicketInventoryRepository;
+import io.github.chikachi.ticketforge.observability.TicketForgeMetrics;
 import io.github.chikachi.ticketforge.order.domain.TicketOrder;
 import io.github.chikachi.ticketforge.order.infrastructure.TicketOrderRepository;
 import io.github.chikachi.ticketforge.payment.api.PaymentCallbackRequest;
@@ -52,6 +54,9 @@ class PaymentCallbackServiceTest {
     @Mock
     private PaymentSignatureService paymentSignatureService;
 
+    @Mock
+    private TicketForgeMetrics metrics;
+
     private PaymentCallbackService service;
     private TicketOrder order;
     private PaymentRecord payment;
@@ -66,8 +71,10 @@ class PaymentCallbackServiceTest {
                 ticketInventoryRepository,
                 paymentSignatureService,
                 new ObjectMapper().findAndRegisterModules(),
-                Clock.fixed(NOW, ZoneOffset.UTC)
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                metrics
         );
+        lenient().when(metrics.startTimer()).thenReturn(io.micrometer.core.instrument.Timer.start(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 
     @Test

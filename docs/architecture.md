@@ -1,45 +1,62 @@
 # TicketForge Architecture
 
-TicketForge is a modular monolith. Code is organized by business area, while the backend remains one Spring Boot application. This keeps local development simple and lets the project focus on transaction correctness before introducing distributed systems.
+TicketForge remains a modular monolith. The backend is one Spring Boot application, organized by business area. Phase 4 focuses on measuring the existing PostgreSQL transaction model before adding Redis, queues, or distributed deployment.
 
 ## Runtime Shape
 
-- PostgreSQL is the source of truth for events, ticket tiers, orders, inventory, and payment records.
-- Flyway owns schema changes. Hibernate validates the schema and never creates or mutates tables.
-- Redis is reserved for later queueing, temporary reservation, and idempotency experiments. Phase 3 does not use Redis for business logic.
-- React is only the user interface. It calls backend APIs and does not hard-code event data.
-- The simulated payment provider is local development tooling, not a real payment integration.
+- PostgreSQL is the source of truth for events, ticket tiers, users, orders, inventory, and payment records.
+- Flyway owns schema changes. Hibernate only validates the schema.
+- Redis remains reserved for future queueing and temporary reservation experiments.
+- React remains the UI only.
+- k6 drives load through public HTTP APIs plus loadtest-only management APIs.
 
-## Current Data Flow
+## Profiles
 
-1. Spring Boot starts and Flyway applies `V1` through `V4`.
-2. The frontend loads `/api/events` and `/api/events/{eventId}`.
-3. The user reserves a ticket tier with `POST /api/orders`.
-4. The backend validates the event and tier, then reserves inventory with a PostgreSQL conditional update.
-5. The user creates a payment session with `POST /api/payments/orders/{orderNumber}`.
-6. The local simulator sends a signed callback to the same callback service used by external callbacks.
-7. A successful callback locks payment first, then order, then converts `reserved_stock` to `sold_stock`.
-8. A failed callback marks the payment failed and leaves the order pending.
-9. Cancellation and expiration compete with payment by locking the same order row. Only one final state wins.
+- Default profile: normal local development using `ticketforge`.
+- `integration` Maven profile: PostgreSQL integration tests using `ticketforge_test`.
+- Spring `loadtest` profile: dedicated performance/correctness runs using `ticketforge_loadtest`.
 
-## Why Not Microservices Yet
+The loadtest management controller is only registered in the `loadtest` profile. It is not available in default, dev, or prod.
 
-The project is intentionally a modular monolith. The hard problem in this phase is transaction correctness: order state transitions, idempotent callbacks, row locks, and inventory invariants. Splitting services now would add network and distributed consistency complexity before the local transaction model is proven.
+## Phase 4 Data Flow
 
-## Inventory Invariant
+1. Start Spring Boot with `-Dspring-boot.run.profiles=loadtest`.
+2. Flyway applies V1 through V4 to `ticketforge_loadtest`.
+3. k6 or PowerShell calls `/api/load-test/reset` with `X-Load-Test-Secret`.
+4. Reset creates the dedicated event, ticket tier, inventory row, and generated load-test users.
+5. k6 runs one of the scenarios through the normal order/payment APIs.
+6. k6 calls `/api/load-test/state` to verify final PostgreSQL state.
+7. k6 writes summary JSON under `load-tests/results/`.
 
-Every reservation, release, and payment success must preserve:
+## Correctness Model
+
+Every scenario ultimately verifies PostgreSQL state, not just HTTP responses.
 
 ```text
 available_stock + reserved_stock + sold_stock = total_stock
 ```
 
-The backend uses PostgreSQL conditional updates rather than Java locks, Redis locks, or client-side stock calculations.
+Oversell is detected from database state and order counts. Negative inventory is detected from database stock columns.
 
-## Payment Consistency
+`OUT_OF_STOCK` is expected once stock is exhausted in spike scenarios. It is counted as a normal business rejection only when the error code is exactly `OUT_OF_STOCK`.
 
-Payment callbacks are signed with HMAC-SHA256. The callback service validates signature, status, amount, currency, and order identity before changing state.
+## Observability
 
-Duplicate success callbacks are idempotent. If payment wins a race against cancellation or expiration, the order becomes `PAID` and stock becomes sold. If cancellation or expiration wins first, the order remains `CANCELLED`, stock is released, and a later success callback is rejected with `ORDER_ALREADY_CANCELLED`.
+Micrometer keeps the default JVM, HTTP, HikariCP, and datasource metrics. TicketForge adds low-cardinality business metrics for:
 
-No concurrency benchmark or capacity number is claimed in this phase.
+- orders created
+- order idempotent replay
+- order rejection
+- inventory reserved/released
+- payment success/failure
+- payment callback replay
+- order reservation duration
+- payment callback duration
+
+Metric tags must stay bounded. IDs, emails, idempotency keys, order numbers, payment transaction ids, provider event ids, and user ids must never be used as tags.
+
+## Baseline Interpretation
+
+Phase 4 creates a PostgreSQL baseline for future comparison with Redis, queueing, or multi-instance designs. Local single-machine results are not production capacity numbers. If k6 and the backend run on the same machine, they compete for CPU and memory.
+
+No performance result should be published unless the scenario was actually executed and the environment was recorded.

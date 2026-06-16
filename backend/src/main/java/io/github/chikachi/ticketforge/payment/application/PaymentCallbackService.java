@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.chikachi.ticketforge.common.exception.ApiException;
 import io.github.chikachi.ticketforge.common.exception.ResourceNotFoundException;
 import io.github.chikachi.ticketforge.inventory.infrastructure.TicketInventoryRepository;
+import io.github.chikachi.ticketforge.observability.TicketForgeMetrics;
 import io.github.chikachi.ticketforge.order.domain.OrderStatus;
 import io.github.chikachi.ticketforge.order.domain.TicketOrder;
 import io.github.chikachi.ticketforge.order.infrastructure.TicketOrderRepository;
@@ -17,6 +18,7 @@ import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Optional;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,70 +32,82 @@ public class PaymentCallbackService {
     private final PaymentSignatureService paymentSignatureService;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final TicketForgeMetrics metrics;
 
     public PaymentCallbackService(PaymentRecordRepository paymentRecordRepository,
                                   TicketOrderRepository ticketOrderRepository,
                                   TicketInventoryRepository ticketInventoryRepository,
                                   PaymentSignatureService paymentSignatureService,
                                   ObjectMapper objectMapper,
-                                  Clock clock) {
+                                  Clock clock,
+                                  TicketForgeMetrics metrics) {
         this.paymentRecordRepository = paymentRecordRepository;
         this.ticketOrderRepository = ticketOrderRepository;
         this.ticketInventoryRepository = ticketInventoryRepository;
         this.paymentSignatureService = paymentSignatureService;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     @Transactional(noRollbackFor = ApiException.class)
     public PaymentCallbackResponse handleCallback(PaymentCallbackRequest request, String signature) {
-        if (!paymentSignatureService.verify(request, signature)) {
-            throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_PAYMENT_SIGNATURE", "Invalid payment callback signature");
-        }
+        Timer.Sample sample = metrics.startTimer();
+        try {
+            if (!paymentSignatureService.verify(request, signature)) {
+                throw new ApiException(HttpStatus.UNAUTHORIZED, "INVALID_PAYMENT_SIGNATURE", "Invalid payment callback signature");
+            }
 
-        PaymentCallbackStatus callbackStatus = parseStatus(request.status());
-        Optional<PaymentRecord> existingProviderEvent = paymentRecordRepository.findByProviderEventId(request.providerEventId());
-        if (existingProviderEvent.isPresent()) {
-            return providerEventReplay(existingProviderEvent.get(), request, callbackStatus);
-        }
+            PaymentCallbackStatus callbackStatus = parseStatus(request.status());
+            Optional<PaymentRecord> existingProviderEvent = paymentRecordRepository.findByProviderEventId(request.providerEventId());
+            if (existingProviderEvent.isPresent()) {
+                return providerEventReplay(existingProviderEvent.get(), request, callbackStatus);
+            }
 
-        PaymentRecord payment = paymentRecordRepository.findByPaymentTransactionId(request.paymentTransactionId())
-                .orElseThrow(() -> new ResourceNotFoundException("PAYMENT_NOT_FOUND", "Payment not found: " + request.paymentTransactionId()));
+            PaymentRecord payment = paymentRecordRepository.findByPaymentTransactionId(request.paymentTransactionId())
+                    .orElseThrow(() -> new ResourceNotFoundException("PAYMENT_NOT_FOUND", "Payment not found: " + request.paymentTransactionId()));
 
-        if (!payment.isPending()) {
-            return replayProcessedPayment(payment, request, callbackStatus);
-        }
+            if (!payment.isPending()) {
+                return replayProcessedPayment(payment, request, callbackStatus);
+            }
 
-        TicketOrder order = ticketOrderRepository.findDetailedByOrderNumberForUpdate(request.orderNumber())
-                .orElseThrow(() -> new ResourceNotFoundException("ORDER_NOT_FOUND", "Order not found: " + request.orderNumber()));
-        ensureCallbackMatchesPayment(payment, order, request);
+            TicketOrder order = ticketOrderRepository.findDetailedByOrderNumberForUpdate(request.orderNumber())
+                    .orElseThrow(() -> new ResourceNotFoundException("ORDER_NOT_FOUND", "Order not found: " + request.orderNumber()));
+            ensureCallbackMatchesPayment(payment, order, request);
 
-        Instant now = Instant.now(clock);
-        String callbackPayload = callbackPayload(request);
+            Instant now = Instant.now(clock);
+            String callbackPayload = callbackPayload(request);
 
-        if (callbackStatus == PaymentCallbackStatus.FAILED) {
-            payment.markFailed(request.providerEventId(), callbackPayload, safeFailureReason(request.failureReason()), now);
+            if (callbackStatus == PaymentCallbackStatus.FAILED) {
+                String reason = safeFailureReason(request.failureReason());
+                payment.markFailed(request.providerEventId(), callbackPayload, reason, now);
+                metrics.paymentFailed(reason);
+                return response(payment, order, false);
+            }
+
+            if (order.getStatus() == OrderStatus.CANCELLED) {
+                payment.markFailed(request.providerEventId(), callbackPayload, "ORDER_ALREADY_CANCELLED", now);
+                metrics.paymentFailed("ORDER_ALREADY_CANCELLED");
+                throw new ApiException(HttpStatus.CONFLICT, "ORDER_ALREADY_CANCELLED", "Cancelled order cannot be paid");
+            }
+            if (order.getStatus() == OrderStatus.PAID) {
+                throw new ApiException(HttpStatus.CONFLICT, "ORDER_ALREADY_PAID", "Order has already been paid");
+            }
+            if (order.getStatus() != OrderStatus.PENDING_PAYMENT) {
+                throw new ApiException(HttpStatus.CONFLICT, "PAYMENT_SESSION_NOT_ALLOWED", "Order is not payable");
+            }
+
+            int updatedRows = ticketInventoryRepository.sellReserved(order.getTicketTier().getId(), order.getQuantity());
+            if (updatedRows != 1) {
+                throw new ApiException(HttpStatus.CONFLICT, "INVENTORY_CONSISTENCY_ERROR", "Reserved inventory could not be converted to sold stock");
+            }
+            order.markPaid(now);
+            payment.markSuccess(request.providerEventId(), callbackPayload, now);
+            metrics.paymentSucceeded();
             return response(payment, order, false);
+        } finally {
+            metrics.recordPaymentCallback(sample);
         }
-
-        if (order.getStatus() == OrderStatus.CANCELLED) {
-            payment.markFailed(request.providerEventId(), callbackPayload, "ORDER_ALREADY_CANCELLED", now);
-            throw new ApiException(HttpStatus.CONFLICT, "ORDER_ALREADY_CANCELLED", "Cancelled order cannot be paid");
-        }
-        if (order.getStatus() == OrderStatus.PAID) {
-            throw new ApiException(HttpStatus.CONFLICT, "ORDER_ALREADY_PAID", "Order has already been paid");
-        }
-        if (order.getStatus() != OrderStatus.PENDING_PAYMENT) {
-            throw new ApiException(HttpStatus.CONFLICT, "PAYMENT_SESSION_NOT_ALLOWED", "Order is not payable");
-        }
-
-        int updatedRows = ticketInventoryRepository.sellReserved(order.getTicketTier().getId(), order.getQuantity());
-        if (updatedRows != 1) {
-            throw new ApiException(HttpStatus.CONFLICT, "INVENTORY_CONSISTENCY_ERROR", "Reserved inventory could not be converted to sold stock");
-        }
-        order.markPaid(now);
-        payment.markSuccess(request.providerEventId(), callbackPayload, now);
-        return response(payment, order, false);
     }
 
     private PaymentCallbackStatus parseStatus(String status) {
@@ -109,6 +123,7 @@ public class PaymentCallbackService {
                                                         PaymentCallbackStatus callbackStatus) {
         if (existing.getPaymentTransactionId().equals(request.paymentTransactionId())
                 && existing.getStatus().name().equals(callbackStatus.name())) {
+            metrics.paymentCallbackReplay();
             return response(existing, existing.getOrder(), true);
         }
         throw new ApiException(HttpStatus.CONFLICT, "PAYMENT_ALREADY_PROCESSED", "Provider event has already been processed");
@@ -118,6 +133,7 @@ public class PaymentCallbackService {
                                                            PaymentCallbackRequest request,
                                                            PaymentCallbackStatus callbackStatus) {
         ensureProcessedReplayMatches(payment, request, callbackStatus);
+        metrics.paymentCallbackReplay();
         return response(payment, payment.getOrder(), true);
     }
 

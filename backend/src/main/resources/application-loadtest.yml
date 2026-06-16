@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/ticketforge_loadtest}
+    username: ${SPRING_DATASOURCE_USERNAME:ticketforge}
+    password: ${SPRING_DATASOURCE_PASSWORD:ticketforge_dev}
+
+ticketforge:
+  orders:
+    reservation-ttl: PT30M
+    expiration-scan-delay-ms: 600000
+  load-test:
+    enabled: true
+    secret: ${TICKETFORGE_LOAD_TEST_SECRET:ticketforge-local-loadtest-secret}

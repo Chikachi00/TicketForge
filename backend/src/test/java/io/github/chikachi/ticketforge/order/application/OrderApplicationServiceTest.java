@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -17,6 +18,7 @@ import io.github.chikachi.ticketforge.event.domain.TicketTierEntity;
 import io.github.chikachi.ticketforge.event.infrastructure.TicketTierRepository;
 import io.github.chikachi.ticketforge.inventory.domain.TicketInventoryEntity;
 import io.github.chikachi.ticketforge.inventory.infrastructure.TicketInventoryRepository;
+import io.github.chikachi.ticketforge.observability.TicketForgeMetrics;
 import io.github.chikachi.ticketforge.order.api.CreateOrderRequest;
 import io.github.chikachi.ticketforge.order.domain.TicketOrder;
 import io.github.chikachi.ticketforge.order.infrastructure.TicketOrderRepository;
@@ -55,6 +57,9 @@ class OrderApplicationServiceTest {
     @Mock
     private OrderNumberGenerator orderNumberGenerator;
 
+    @Mock
+    private TicketForgeMetrics metrics;
+
     private OrderApplicationService service;
 
     private AppUser user;
@@ -74,8 +79,10 @@ class OrderApplicationServiceTest {
                 orderNumberGenerator,
                 properties,
                 new OrderMapper(),
-                Clock.fixed(NOW, ZoneOffset.UTC)
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                metrics
         );
+        lenient().when(metrics.startTimer()).thenReturn(io.micrometer.core.instrument.Timer.start(new io.micrometer.core.instrument.simple.SimpleMeterRegistry()));
     }
 
     @Test

@@ -1,0 +1,97 @@
+name: Performance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  k6-correctness:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ticketforge_loadtest
+          POSTGRES_USER: ticketforge
+          POSTGRES_PASSWORD: ticketforge_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticketforge -d ticketforge_loadtest"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      BASE_URL: http://127.0.0.1:8080
+      LOAD_TEST_SECRET: ticketforge-local-loadtest-secret
+      PAYMENT_CALLBACK_SECRET: ticketforge-local-dev-secret
+      SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/ticketforge_loadtest
+      SPRING_DATASOURCE_USERNAME: ticketforge
+      SPRING_DATASOURCE_PASSWORD: ticketforge_dev
+      TICKETFORGE_LOAD_TEST_SECRET: ticketforge-local-loadtest-secret
+      TICKETFORGE_PAYMENT_CALLBACK_SECRET: ticketforge-local-dev-secret
+      TOTAL_STOCK: "20"
+      USER_COUNT: "80"
+      VUS: "50"
+      IDEMPOTENCY_REQUESTS: "10"
+      CALLBACK_REPLAY_REQUESTS: "10"
+      DURATION: "10s"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Make Maven Wrapper executable
+        working-directory: backend
+        run: chmod +x mvnw
+
+      - name: Start backend in loadtest profile
+        working-directory: backend
+        run: |
+          ./mvnw spring-boot:run -Dspring-boot.run.profiles=loadtest > ../load-tests/results/backend-loadtest.log 2>&1 &
+          echo $! > ../load-tests/results/backend.pid
+
+      - name: Wait for health
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            if curl -fsS "$BASE_URL/actuator/health" | grep -q '"status":"UP"'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          cat load-tests/results/backend-loadtest.log
+          exit 1
+
+      - name: Set up k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run smoke
+        working-directory: load-tests
+        run: k6 run scenarios/smoke.js
+
+      - name: Run oversell spike
+        working-directory: load-tests
+        run: k6 run scenarios/oversell-spike.js
+
+      - name: Run idempotency retry
+        working-directory: load-tests
+        run: k6 run scenarios/idempotency-retry.js
+
+      - name: Run payment callback replay
+        working-directory: load-tests
+        run: k6 run scenarios/payment-callback-replay.js
+
+      - name: Upload summaries
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ticketforge-performance-summaries
+          path: |
+            load-tests/results/*-summary.json
+            load-tests/results/backend-loadtest.log
+            docs/performance/baseline-template.md

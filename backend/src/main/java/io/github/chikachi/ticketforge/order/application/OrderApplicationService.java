@@ -6,6 +6,7 @@ import io.github.chikachi.ticketforge.event.domain.EventStatus;
 import io.github.chikachi.ticketforge.event.domain.TicketTierEntity;
 import io.github.chikachi.ticketforge.event.infrastructure.TicketTierRepository;
 import io.github.chikachi.ticketforge.inventory.infrastructure.TicketInventoryRepository;
+import io.github.chikachi.ticketforge.observability.TicketForgeMetrics;
 import io.github.chikachi.ticketforge.order.api.CreateOrderRequest;
 import io.github.chikachi.ticketforge.order.api.CreateOrderResult;
 import io.github.chikachi.ticketforge.order.api.OrderResponse;
@@ -23,6 +24,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import io.micrometer.core.instrument.Timer;
 
 @Service
 public class OrderApplicationService {
@@ -37,6 +39,7 @@ public class OrderApplicationService {
     private final OrderProperties orderProperties;
     private final OrderMapper orderMapper;
     private final Clock clock;
+    private final TicketForgeMetrics metrics;
 
     public OrderApplicationService(AppUserRepository appUserRepository,
                                    TicketTierRepository ticketTierRepository,
@@ -45,7 +48,8 @@ public class OrderApplicationService {
                                    OrderNumberGenerator orderNumberGenerator,
                                    OrderProperties orderProperties,
                                    OrderMapper orderMapper,
-                                   Clock clock) {
+                                   Clock clock,
+                                   TicketForgeMetrics metrics) {
         this.appUserRepository = appUserRepository;
         this.ticketTierRepository = ticketTierRepository;
         this.ticketInventoryRepository = ticketInventoryRepository;
@@ -54,17 +58,29 @@ public class OrderApplicationService {
         this.orderProperties = orderProperties;
         this.orderMapper = orderMapper;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     @Transactional
     public CreateOrderResult createOrder(String userEmail, String idempotencyKey, CreateOrderRequest request) {
+        Timer.Sample sample = metrics.startTimer();
         String normalizedKey = validateIdempotencyKey(idempotencyKey);
         validateRequest(request);
         AppUser user = lockUser(userEmail);
 
-        return ticketOrderRepository.findDetailedByUserIdAndIdempotencyKey(user.getId(), normalizedKey)
-                .map(order -> new CreateOrderResult(orderMapper.toResponse(order, true), false))
-                .orElseGet(() -> createNewOrder(user, normalizedKey, request));
+        try {
+            return ticketOrderRepository.findDetailedByUserIdAndIdempotencyKey(user.getId(), normalizedKey)
+                    .map(order -> {
+                        metrics.orderIdempotentReplay();
+                        return new CreateOrderResult(orderMapper.toResponse(order, true), false);
+                    })
+                    .orElseGet(() -> createNewOrder(user, normalizedKey, request));
+        } catch (ApiException exception) {
+            metrics.orderRejected(exception.code());
+            throw exception;
+        } finally {
+            metrics.recordOrderReservation(sample);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -109,6 +125,7 @@ public class OrderApplicationService {
 
         ensureOnSale(ticketTier, now);
         reserveInventory(ticketTier.getId(), request.quantity());
+        metrics.inventoryReserved(ticketTier.getCode(), request.quantity());
 
         BigDecimal unitPrice = ticketTier.getPrice();
         BigDecimal totalAmount = unitPrice.multiply(BigDecimal.valueOf(request.quantity()));
@@ -127,8 +144,10 @@ public class OrderApplicationService {
 
         try {
             TicketOrder saved = ticketOrderRepository.saveAndFlush(order);
+            metrics.orderCreated(ticketTier.getCode());
             return new CreateOrderResult(orderMapper.toResponse(saved, false), true);
         } catch (DataIntegrityViolationException exception) {
+            metrics.orderRejected("INVENTORY_CONSISTENCY_ERROR");
             throw new ApiException(HttpStatus.CONFLICT, "INVENTORY_CONSISTENCY_ERROR", "Order could not be created safely");
         }
     }
@@ -159,6 +178,7 @@ public class OrderApplicationService {
         if (updatedRows != 1) {
             throw new ApiException(HttpStatus.CONFLICT, "INVENTORY_CONSISTENCY_ERROR", "Reserved inventory could not be released");
         }
+        metrics.inventoryReleased(order.getTicketTier().getCode(), order.getQuantity());
         order.cancel(Instant.now(clock));
     }
 

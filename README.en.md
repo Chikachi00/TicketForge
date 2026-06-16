@@ -2,176 +2,122 @@
 
 [中文 README](README.md)
 
-TicketForge is a high-concurrency ticketing-system lab inspired by ePlus, Ticket Pia, Damai, and similar platforms. The current stage is **Phase 3: Simulated Payment, Idempotent Callback and Order State Machine**.
+TicketForge is a high-concurrency ticketing-system lab inspired by ePlus, Ticket Pia, Damai, and similar platforms. The current stage is **Phase 4: k6 Load Testing, Observability and PostgreSQL Baseline**.
 
-Phase 3 uses React + TypeScript, Spring Boot Java 21, and Windows local PostgreSQL. It does not use Docker, Redis, message queues, real payment providers, JWT, virtual queueing, or microservices.
+Phase 4 adds a dedicated `loadtest` Spring profile, native Windows k6 scenarios, low-cardinality Micrometer business metrics, and a reproducible PostgreSQL baseline workflow. It still does not add Redis, message queues, real payment providers, JWT, virtual queueing, WebSocket, microservices, Kubernetes, Grafana Server, or Prometheus Server.
 
-## Current Features
-
-- Event and ticket-tier query APIs.
-- PostgreSQL schema versioning with Flyway.
-- Pending order creation with atomic inventory reservation.
-- Idempotent order submission with `Idempotency-Key`.
-- Manual cancellation and scheduled expiration.
-- Simulated payment session creation.
-- HMAC-SHA256 payment callback verification.
-- Successful payment converts reserved stock to sold stock.
-- Failed payment keeps the order pending and keeps stock reserved.
-- Duplicate success callbacks are idempotent.
-- React UI for reservation, cancellation, simulated payment success/failure, and order refresh.
-
-## Stack
-
-- Backend: Java 21, Spring Boot 3.5.15, Maven Wrapper, Spring Web, Spring Data JPA, Validation, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
-- Frontend: React, TypeScript, Vite, npm, CSS
-- Database: Windows local PostgreSQL
-- CI: GitHub Actions with PostgreSQL 17
-
-## Local Database
+## Databases
 
 ```text
-Host: localhost
-Port: 5432
-Database: ticketforge
-Test database: ticketforge_test
-Username: ticketforge
-Password: ticketforge_dev
+Development: ticketforge
+Integration: ticketforge_test
+Load test:   ticketforge_loadtest
+Username:    ticketforge
+Password:    ticketforge_dev
 ```
 
-Proxy example:
+Create the load-test database once with a PostgreSQL administrator account:
 
-```powershell
-$env:HTTP_PROXY="http://127.0.0.1:7890"
-$env:HTTPS_PROXY="http://127.0.0.1:7890"
-git config --local http.proxy http://127.0.0.1:7890
-git config --local https.proxy http://127.0.0.1:7890
+```sql
+CREATE DATABASE ticketforge_loadtest
+    OWNER ticketforge
+    ENCODING 'UTF8';
 ```
 
-## Run Backend
+Do not run load tests against the normal `ticketforge` database.
+
+## Run Loadtest Backend
 
 ```powershell
 cd backend
-.\mvnw.cmd test
-.\mvnw.cmd spring-boot:run
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=loadtest"
 ```
 
-Flyway migrations:
+`application-loadtest.yml` points to `ticketforge_loadtest` and extends reservation TTL to `PT30M`.
 
-- `V1__create_core_schema.sql`: core tables.
-- `V2__seed_demo_data.sql`: demo users, event, ticket tiers, and inventory.
-- `V3__prepare_order_reservation.sql`: reservation, cancellation, and expiration support.
-- `V4__prepare_simulated_payment.sql`: simulated payment fields, constraints, idempotency indexes, and one pending payment per order.
+## Load-Test APIs
 
-## Run Frontend
-
-```powershell
-cd frontend
-npm ci
-npm run dev
-```
-
-Open:
-
-- Frontend: http://localhost:5173
-- Health: http://localhost:8080/actuator/health
-- Events API: http://localhost:8080/api/events
-
-## APIs
+Only available in the `loadtest` profile:
 
 ```http
-GET /api/events
-GET /api/events/{eventId}
-GET /api/events/slug/{slug}
-POST /api/orders
-GET /api/orders/{orderNumber}
-GET /api/orders/me
-POST /api/orders/{orderNumber}/cancel
-POST /api/payments/orders/{orderNumber}
-GET /api/payments/{paymentTransactionId}
-POST /api/payments/callback
-POST /api/payment-simulator/{paymentTransactionId}/success
-POST /api/payment-simulator/{paymentTransactionId}/failure
+GET /api/load-test/profile
+POST /api/load-test/reset
+GET /api/load-test/state?eventSlug=ticketforge-load-test-live
 ```
 
-The simulator endpoints are disabled in the `prod` profile.
+All require:
 
-## Payment Callback Signature
-
-Configuration:
-
-```yaml
-ticketforge:
-  payment:
-    callback-secret: ${TICKETFORGE_PAYMENT_CALLBACK_SECRET:ticketforge-local-dev-secret}
+```http
+X-Load-Test-Secret: ticketforge-local-loadtest-secret
 ```
 
-Signing string:
+Reset affects only the dedicated load-test event, related orders/payments, and `loadtest-user-*@ticketforge.local` users.
+
+## Observability
+
+Actuator exposes:
 
 ```text
-providerEventId|paymentTransactionId|orderNumber|status|amount|currency|occurredAt
+/actuator/health
+/actuator/info
+/actuator/metrics
+/actuator/prometheus
 ```
 
-Amounts use exactly two decimal places, for example `1280.00`. Times are UTC ISO 8601 values such as `2026-06-16T10:02:00Z`. The backend verifies HMAC-SHA256 with UTF-8 input and constant-time comparison.
+Business metrics include order creation, idempotent replay, rejection, inventory reserve/release, payment success/failure, callback replay, and order/payment durations. Metric tags are intentionally low cardinality. Do not tag metrics with order numbers, payment transaction ids, emails, idempotency keys, provider event ids, or user ids.
 
-## Payment State Machine
+## k6
 
-Allowed:
-
-```text
-PENDING_PAYMENT -> PAID
-PENDING_PAYMENT -> CANCELLED
-```
-
-Reserved for later:
-
-```text
-PAID -> REFUNDED
-```
-
-Forbidden:
-
-```text
-CANCELLED -> PAID
-PAID -> CANCELLED
-CANCELLED -> PENDING_PAYMENT
-```
-
-Successful payment locks the payment row, locks the order row, atomically converts reserved stock to sold stock, marks the order `PAID`, and marks the payment `SUCCESS`. Failed payment marks only the payment as `FAILED`; the order remains `PENDING_PAYMENT`.
-
-Duplicate success callbacks return `idempotentReplay=true` and do not transfer inventory again. Payment vs cancellation and payment vs expiration races allow only one final order state and one inventory transition.
-
-## Tests
-
-Default backend tests:
+Install native k6 on Windows:
 
 ```powershell
-cd backend
-.\mvnw.cmd test
+winget install k6 --source winget
+k6 version
 ```
 
-PostgreSQL integration tests:
+Run:
 
 ```powershell
-cd backend
-.\mvnw.cmd verify -Pintegration
+cd load-tests
+.\scripts\run-smoke.ps1
+.\scripts\run-correctness.ps1
+.\scripts\run-baseline.ps1
 ```
 
-Frontend:
+Scenarios:
 
-```powershell
-cd frontend
-npm ci
-npm run build
+- Smoke
+- Order baseline
+- Oversell spike
+- Idempotency retry
+- Payment callback replay
+- Full journey
+
+Strict correctness thresholds require zero oversell, zero inventory inconsistency, zero duplicate order processing, zero duplicate payment processing, and zero unexpected errors.
+
+Provisional performance guardrails:
+
+```text
+http_req_duration p(95) < 3000ms
+http_req_duration p(99) < 5000ms
 ```
 
-## Not Implemented
+These are provisional guardrails, not production SLOs.
 
-- Registration, login, and JWT
-- Real payment providers and refunds
-- Redis business logic, Redis locks, Lua
-- Virtual queueing
-- Message queues
-- k6 load tests
-- WebSocket/SSE
-- Microservices and Kubernetes
-- Seat selection
+`OUT_OF_STOCK` is an expected business result after stock is exhausted in spike scenarios. Other 409 responses, 5xx responses, invalid JSON, negative inventory, oversell, or invariant failures are test failures.
+
+## Reports
+
+Templates:
+
+```text
+docs/performance/baseline-template.md
+load-tests/reports/baseline-template.md
+```
+
+Create `docs/performance/baseline.md` only after a real successful local run. Do not invent RPS, P50, P95, P99, or any performance number.
+
+## GitHub Actions
+
+- `ci.yml`: normal push and pull request checks.
+- `performance.yml`: manual `workflow_dispatch` only. It runs low-scale k6 smoke/correctness against PostgreSQL 17 and uploads summaries. It is not a real production baseline.
