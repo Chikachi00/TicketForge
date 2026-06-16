@@ -32,6 +32,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+          
+      - name: Make Maven Wrapper executable
+        run: chmod +x mvnw
+
       - name: Test backend
         run: ./mvnw verify -Pintegration
 
