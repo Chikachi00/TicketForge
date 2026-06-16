@@ -116,7 +116,10 @@ class PaymentConcurrencyIT {
     @Test
     void paymentAndExpirationRaceHasOneFinalInventoryTransition() throws Exception {
         Flow flow = createReservedPaymentFlow();
-        jdbcTemplate.update("UPDATE ticket_orders SET expires_at = NOW() - INTERVAL '1 second' WHERE order_number = ?", flow.orderNumber());
+        jdbcTemplate.update(
+            "UPDATE ticket_orders SET expires_at = created_at WHERE order_number = ?",
+            flow.orderNumber()
+        );
         PaymentCallbackRequest request = successRequest(flow, "EVT-" + UUID.randomUUID());
         String signature = paymentSignatureService.sign(request);
 
