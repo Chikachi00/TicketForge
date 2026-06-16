@@ -20,9 +20,12 @@ class TicketForgeMetricsTest {
         metrics.paymentCallbackReplay();
 
         Set<String> forbidden = Set.of("orderNumber", "paymentTransactionId", "email", "idempotencyKey", "providerEventId", "userId");
-        assertThat(registry.getMeters())
-                .flatExtracting(Meter::getId)
-                .flatExtracting(Meter.Id::getTags)
-                .allSatisfy(tag -> assertThat(forbidden).doesNotContain(tag.getKey()));
+        var actualTagKeys = registry.getMeters().stream()
+            .flatMap(meter -> meter.getId().getTags().stream())
+            .map(tag -> tag.getKey())
+            .toList();
+
+        assertThat(actualTagKeys)
+            .doesNotContainAnyElementsOf(forbidden);
     }
 }
