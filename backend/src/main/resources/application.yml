@@ -29,6 +29,9 @@ spring:
         format_sql: true
 
 management:
+  health:
+    redis:
+      enabled: false
   endpoints:
     web:
       exposure:
@@ -42,3 +45,7 @@ logging:
     org.hibernate.SQL: debug
     org.hibernate.orm.jdbc.bind: warn
 
+ticketforge:
+  orders:
+    reservation-ttl: PT5M
+    expiration-scan-delay-ms: 10000

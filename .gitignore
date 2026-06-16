@@ -1,4 +1,5 @@
 .env
+/mvnw.cmd
 .idea/
 .vscode/
 target/

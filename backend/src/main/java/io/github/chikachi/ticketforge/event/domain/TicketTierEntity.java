@@ -27,10 +27,10 @@ public class TicketTierEntity {
     @JoinColumn(name = "event_id", nullable = false)
     private EventEntity event;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 40)
     private String code;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 120)
     private String name;
 
     @Column(nullable = false, precision = 12, scale = 2)
@@ -86,6 +86,10 @@ public class TicketTierEntity {
         return totalStock;
     }
 
+    public EventEntity getEvent() {
+        return event;
+    }
+
     public TicketInventoryEntity getInventory() {
         return inventory;
     }
@@ -94,4 +98,3 @@ public class TicketTierEntity {
         this.event = event;
     }
 }
-

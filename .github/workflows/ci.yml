@@ -7,6 +7,20 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: ticketforge_test
+          POSTGRES_USER: ticketforge
+          POSTGRES_PASSWORD: ticketforge_dev
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticketforge -d ticketforge_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: backend
@@ -19,7 +33,7 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Test backend
-        run: ./mvnw test
+        run: ./mvnw verify -Pintegration
 
   frontend:
     runs-on: ubuntu-latest
@@ -39,4 +53,3 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build
-

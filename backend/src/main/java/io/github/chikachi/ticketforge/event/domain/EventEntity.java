@@ -22,13 +22,13 @@ public class EventEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false, unique = true, length = 160)
     private String slug;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 255)
     private String name;
 
-    @Column(nullable = false)
+    @Column(nullable = false, length = 255)
     private String venue;
 
     @Column(columnDefinition = "text")
@@ -41,7 +41,7 @@ public class EventEntity {
     private Instant salesStartAt;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, length = 20)
     private EventStatus status;
 
     @Column(nullable = false)

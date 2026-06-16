@@ -2,204 +2,214 @@
 
 [中文 README](README.md)
 
-TicketForge is a high-concurrency ticketing-system lab inspired by platforms such as ePlus, Ticket Pia, and Damai. Phase 1 focuses only on a reliable project foundation, database model, and the smallest event-query path.
+TicketForge is a high-concurrency ticketing-system lab inspired by platforms such as ePlus, Ticket Pia, and Damai.
 
-## Current Phase
+The current stage is **Phase 2: PostgreSQL Inventory Reservation and Idempotent Orders**. Phase 2 targets Windows local PostgreSQL and does not require Docker, Redis, payment, virtual queueing, or message queues.
 
-- Docker Compose starts PostgreSQL, Redis, and Adminer.
-- Spring Boot uses Flyway to create the core schema and seed demo data.
-- The backend exposes read-only event query APIs.
-- The React + TypeScript frontend displays events, ticket tiers, prices, and inventory.
-- Backend tests and frontend builds run in GitHub Actions.
+## Current Features
 
-## Why TicketForge
-
-Real ticketing platforms must balance sudden traffic, inventory consistency, idempotency, payment callbacks, queueing, and user experience. TicketForge builds those concerns in phases. This first phase keeps the system runnable, testable, and migration-driven.
+- Event and ticket-tier query APIs.
+- Database versioning with PostgreSQL and Flyway.
+- Pending order creation.
+- Atomic PostgreSQL inventory reservation.
+- Oversell and negative-stock prevention.
+- Idempotent order submission with `Idempotency-Key`.
+- Manual order cancellation with stock release.
+- Automatic cancellation of unpaid orders after 5 minutes.
+- React UI for reservation, order details, countdown, cancellation, and recent orders.
 
 ## Tech Stack
 
-- Backend: Java 21, Spring Boot 3.5.15, Maven, Spring Web, Spring Data JPA, Validation, Redis, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
+- Backend: Java 21, Spring Boot 3.5.15, Maven Wrapper, Spring Web, Spring Data JPA, Validation, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
 - Frontend: React, TypeScript, Vite, npm, CSS
-- Infrastructure: PostgreSQL, Redis, Adminer, Docker Compose
+- Database: Windows local PostgreSQL
+- Optional infrastructure: `compose.yaml` remains in the repo, but Docker is not required in Phase 2
 
-## Structure
-
-```text
-TicketForge/
-├─ backend/
-├─ frontend/
-├─ load-tests/
-├─ docs/
-├─ compose.yaml
-├─ .env.example
-├─ README.md
-└─ README.en.md
-```
-
-## Architecture
-
-TicketForge is currently a modular monolith, not a microservice system. PostgreSQL is the source of truth for business data. Redis is started in Phase 1 but reserved for later queueing, temporary reservation, and idempotency-control work. Flyway owns database versioning. React is responsible only for the UI. See [docs/architecture.md](docs/architecture.md).
-
-## Requirements
-
-- Java 21
-- Node.js LTS
-- npm
-- Docker Desktop or a compatible Docker Compose runtime
-- Git
-
-## Clash Proxy
-
-If dependency downloads need a proxy, set these in the current terminal:
-
-```powershell
-$env:HTTP_PROXY="http://127.0.0.1:7890"
-$env:HTTPS_PROXY="http://127.0.0.1:7890"
-```
-
-Repository-local Git proxy:
-
-```bash
-git config --local http.proxy http://127.0.0.1:7890
-git config --local https.proxy http://127.0.0.1:7890
-```
-
-If Maven does not pick up environment variables, append:
+## Local Database
 
 ```text
--Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890
+Host: localhost
+Port: 5432
+Database: ticketforge
+Username: ticketforge
+Password: ticketforge_dev
 ```
 
-## Local Setup
+Redis is not required. Redis health is disabled, so `/actuator/health` can remain `UP` without Redis.
 
-Copy the environment template:
-
-```bash
-cp .env.example .env
-```
-
-Start infrastructure:
-
-```bash
-docker compose up -d
-docker compose ps
-```
-
-Start the backend:
-
-```bash
-cd backend
-./mvnw spring-boot:run
-```
-
-Windows:
+## Start Backend
 
 ```powershell
 cd backend
+.\mvnw.cmd test
 .\mvnw.cmd spring-boot:run
 ```
 
-Start the frontend:
+Flyway files live in:
 
-```bash
+```text
+backend/src/main/resources/db/migration/
+```
+
+- `V1__create_core_schema.sql`: core tables.
+- `V2__seed_demo_data.sql`: demo users, event, ticket tiers, and inventory.
+- `V3__prepare_order_reservation.sql`: cancellation timestamp, non-null idempotency key, pending-expiry index, order time constraints, and demo sales-start update.
+
+## Start Frontend
+
+```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
 Open:
 
 - Frontend: http://localhost:5173
-- Backend health: http://localhost:8080/actuator/health
+- Health: http://localhost:8080/actuator/health
 - Events API: http://localhost:8080/api/events
-- Adminer: http://localhost:8081
 
-## Adminer Login
+## Demo Identity
 
-- System: PostgreSQL
-- Server: `postgres`
-- Username: `ticketforge`
-- Password: `ticketforge_dev`
-- Database: `ticketforge`
+There is no login system yet. The backend uses a request header as the current demo user:
 
-These credentials are for local development only.
-
-## Flyway
-
-Migration files live in:
-
-```text
-backend/src/main/resources/db/migration/
+```http
+X-User-Email: user@ticketforge.local
 ```
 
-- `V1__create_core_schema.sql`: creates users, events, ticket tiers, inventory, orders, and payment records.
-- `V2__seed_demo_data.sql`: creates demo users, one demo event, three ticket tiers, and inventory.
+The frontend labels this user as `Demo User`. Real authentication will replace this later.
 
-## API Examples
+## APIs
+
+Events:
 
 ```http
 GET /api/events
 GET /api/events/{eventId}
 GET /api/events/slug/{slug}
-GET /actuator/health
 ```
 
-Examples:
+Orders:
 
-```bash
-curl http://localhost:8080/api/events
-curl http://localhost:8080/api/events/1
-curl http://localhost:8080/api/events/slug/ticketforge-opening-live
+```http
+POST /api/orders
+GET /api/orders/{orderNumber}
+GET /api/orders/me
+GET /api/orders/me?status=PENDING_PAYMENT
+POST /api/orders/{orderNumber}/cancel
 ```
 
-## Not Implemented Yet
+Create an order:
 
-- Registration, login, and JWT
-- Virtual queue
-- Checkout
-- Inventory deduction
-- Payment
-- Redis distributed locks and Lua
-- Message queues
-- k6 load tests
-- WebSocket or SSE
-- Microservices
-- Kubernetes
-- Seat selection
+```powershell
+$headers = @{
+  "X-User-Email" = "user@ticketforge.local"
+  "Idempotency-Key" = [guid]::NewGuid().ToString()
+}
 
-## Roadmap
+$body = @{
+  ticketTierId = 1
+  quantity = 1
+} | ConvertTo-Json
 
-- Phase 2: order creation, inventory reservation, and idempotency keys.
-- Phase 3: Redis queueing, temporary stock locks, and timeout release.
-- Phase 4: simulated payment callbacks, order state machine, and compensation.
-- Phase 5: load testing, bottleneck analysis, and observability.
+$order = Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8080/api/orders" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
 
-## Test Commands
+$order
+```
 
-Backend:
+Submitting the same `$headers` and `$body` again returns the same order with `idempotentReplay = true`.
 
-```bash
+## Inventory Reservation
+
+Order creation runs in one PostgreSQL transaction:
+
+1. Lock the demo user row by `X-User-Email`.
+2. Check whether `user_id + idempotency_key` already exists.
+3. Validate ticket tier, event status, and sales start.
+4. Reserve inventory with an atomic PostgreSQL conditional `UPDATE`.
+5. Create the `PENDING_PAYMENT` order.
+
+The stock gate:
+
+```sql
+UPDATE ticket_inventory
+SET available_stock = available_stock - :quantity,
+    reserved_stock = reserved_stock + :quantity,
+    version = version + 1,
+    updated_at = CURRENT_TIMESTAMP
+WHERE ticket_tier_id = :ticketTierId
+  AND available_stock >= :quantity;
+```
+
+When the affected row count is `0`, the API returns `OUT_OF_STOCK`.
+
+Inventory invariant:
+
+```text
+available_stock >= 0
+reserved_stock >= 0
+sold_stock >= 0
+available_stock + reserved_stock + sold_stock = total_stock
+```
+
+## Idempotency
+
+The same user submitting the same `Idempotency-Key` repeatedly creates only one order and reserves stock once. The application serializes repeated submissions for the same user with a `PESSIMISTIC_WRITE` user-row lock. The database unique constraint `UNIQUE(user_id, idempotency_key)` remains the final guard.
+
+## Cancellation and Expiration
+
+Only `PENDING_PAYMENT` orders can be actively cancelled. Cancellation locks the order row, sets `CANCELLED/cancelled_at`, and releases reserved stock back to available stock in the same transaction.
+
+Pending orders expire after 5 minutes by default:
+
+```yaml
+ticketforge:
+  orders:
+    reservation-ttl: PT5M
+    expiration-scan-delay-ms: 10000
+```
+
+The scheduler scans up to 100 expired pending orders per batch and cancels them one by one. Core business logic uses an injected `Clock`.
+
+## Tests
+
+Default backend tests do not require Docker, Redis, or an external database:
+
+```powershell
 cd backend
-./mvnw test
+.\mvnw.cmd test
 ```
+
+Real PostgreSQL integration tests:
+
+```powershell
+cd backend
+.\mvnw.cmd verify -Pintegration
+```
+
+The integration profile uses `ticketforge_test` and includes concurrent oversell prevention plus concurrent idempotency tests. GitHub Actions starts PostgreSQL 17 and runs this profile.
 
 Frontend:
 
-```bash
+```powershell
 cd frontend
 npm ci
 npm run build
 ```
 
-## Commit Convention
+## Not Implemented Yet
 
-Use Conventional Commits:
-
-```text
-feat: add event query API
-fix: correct inventory mapping
-docs: update local setup guide
-test: add event service coverage
-chore: update CI workflow
-```
-
+- Registration, login, and JWT
+- Real payment
+- Redis business logic
+- Virtual queue
+- Message queues
+- k6 load tests
+- WebSocket/SSE
+- Microservices and Kubernetes
+- Seat selection

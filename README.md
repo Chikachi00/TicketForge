@@ -2,25 +2,28 @@
 
 [English README](README.en.md)
 
-TicketForge 是一个模拟 ePlus、Ticket Pia、大麦等票务平台核心交易流程的高并发票务系统实验项目。当前阶段只建立可靠的工程基础、数据库模型和最小演出查询链路。
+TicketForge 是一个模拟 ePlus、Ticket Pia、大麦等票务平台核心交易流程的高并发票务系统实验项目。
 
-## 当前阶段功能
+当前阶段是 **Phase 2: PostgreSQL Inventory Reservation and Idempotent Orders**。本阶段推荐在 Windows 本地运行 PostgreSQL，不依赖 Docker、Redis、支付、虚拟排队或消息队列。
 
-- Docker Compose 启动 PostgreSQL、Redis 和 Adminer。
-- Spring Boot 通过 Flyway 创建核心表并写入演示数据。
-- 后端提供只读演出查询 API。
-- React + TypeScript 前端展示演出、票档、价格和库存。
-- 后端测试和前端构建纳入 GitHub Actions。
+## 当前功能
 
-## 为什么开发 TicketForge
-
-真实票务系统会面对突发流量、库存一致性、幂等、支付回调、排队和用户体验之间的取舍。TicketForge 用阶段化方式逐步搭建这些能力，本阶段先把可运行、可测试、可迁移的基础打牢。
+- 演出和票档查询。
+- PostgreSQL/Flyway 管理数据库版本。
+- 创建待支付订单。
+- PostgreSQL 原子条件更新实现库存预占。
+- 防止库存超卖和负库存。
+- `Idempotency-Key` 幂等订单提交。
+- 主动取消订单并释放库存。
+- 5 分钟待支付超时自动取消并释放库存。
+- React 页面支持预占、订单查看、倒计时、取消和我的订单。
 
 ## 技术栈
 
-- Backend: Java 21, Spring Boot 3.5.15, Maven, Spring Web, Spring Data JPA, Validation, Redis, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
+- Backend: Java 21, Spring Boot 3.5.15, Maven Wrapper, Spring Web, Spring Data JPA, Validation, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
 - Frontend: React, TypeScript, Vite, npm, CSS
-- Infrastructure: PostgreSQL, Redis, Adminer, Docker Compose
+- Database: Windows 本地 PostgreSQL
+- Optional infrastructure: `compose.yaml` 仍保留 PostgreSQL/Redis/Adminer，但 Phase 2 不要求使用 Docker
 
 ## 目录结构
 
@@ -36,170 +39,261 @@ TicketForge/
 └─ README.en.md
 ```
 
-## 架构说明
+## 本地环境
 
-当前采用模块化单体，而不是微服务。PostgreSQL 是业务数据的最终持久化来源；Redis 在本阶段仅启动，后续用于排队、临时预占和幂等控制；Flyway 管理数据库版本；React 只负责用户界面。更多说明见 [docs/architecture.md](docs/architecture.md)。
+推荐数据库：
 
-## 环境要求
+```text
+Host: localhost
+Port: 5432
+Database: ticketforge
+Username: ticketforge
+Password: ticketforge_dev
+```
 
-- Java 21
-- Node.js LTS
-- npm
-- Docker Desktop 或兼容 Docker Compose 的运行环境
-- Git
+Phase 2 不需要启动 Redis。后端已关闭 Redis health indicator，因此 Redis 未运行时 `/actuator/health` 仍可为 `UP`。
 
-## Clash 代理说明
-
-如果依赖下载需要代理，当前终端可设置：
+Clash 代理：
 
 ```powershell
 $env:HTTP_PROXY="http://127.0.0.1:7890"
 $env:HTTPS_PROXY="http://127.0.0.1:7890"
-```
-
-Git 本仓库代理：
-
-```bash
 git config --local http.proxy http://127.0.0.1:7890
 git config --local https.proxy http://127.0.0.1:7890
 ```
 
-Maven 如未自动读取环境变量，可追加：
-
-```text
--Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7890 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=7890
-```
-
-## 本地启动
-
-复制环境变量模板：
-
-```bash
-cp .env.example .env
-```
-
-启动基础设施：
-
-```bash
-docker compose up -d
-docker compose ps
-```
-
-启动后端：
-
-```bash
-cd backend
-./mvnw spring-boot:run
-```
-
-Windows:
+## 启动后端
 
 ```powershell
 cd backend
+.\mvnw.cmd test
 .\mvnw.cmd spring-boot:run
 ```
 
-启动前端：
+Flyway 文件：
 
-```bash
+```text
+backend/src/main/resources/db/migration/
+```
+
+- `V1__create_core_schema.sql`: 核心表。
+- `V2__seed_demo_data.sql`: 演示用户、演出、票档和库存。
+- `V3__prepare_order_reservation.sql`: 订单取消时间、幂等键非空、待支付超时索引、订单时间约束，并把演示演出开票时间移到过去。
+
+## 启动前端
+
+```powershell
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
 访问：
 
 - Frontend: http://localhost:5173
-- Backend health: http://localhost:8080/actuator/health
+- Health: http://localhost:8080/actuator/health
 - Events API: http://localhost:8080/api/events
-- Adminer: http://localhost:8081
 
-## Adminer 登录方式
+## 模拟用户身份
 
-- System: PostgreSQL
-- Server: `postgres`
-- Username: `ticketforge`
-- Password: `ticketforge_dev`
-- Database: `ticketforge`
+当前没有登录系统。前后端使用请求头模拟当前用户：
 
-以上账号仅用于本地开发。
-
-## Flyway
-
-SQL 文件位于：
-
-```text
-backend/src/main/resources/db/migration/
+```http
+X-User-Email: user@ticketforge.local
 ```
 
-- `V1__create_core_schema.sql`: 创建用户、演出、票档、库存、订单和支付记录表。
-- `V2__seed_demo_data.sql`: 创建演示用户、演出、三档票种和库存。
+前端页面标记为 `Demo User`。这只是开发阶段模拟身份，后续会被真实认证替换。
 
-## API 示例
+## API
+
+演出：
 
 ```http
 GET /api/events
 GET /api/events/{eventId}
 GET /api/events/slug/{slug}
-GET /actuator/health
 ```
 
-示例：
+订单：
 
-```bash
-curl http://localhost:8080/api/events
-curl http://localhost:8080/api/events/1
-curl http://localhost:8080/api/events/slug/ticketforge-opening-live
+```http
+POST /api/orders
+GET /api/orders/{orderNumber}
+GET /api/orders/me
+GET /api/orders/me?status=PENDING_PAYMENT
+POST /api/orders/{orderNumber}/cancel
 ```
 
-## 当前未实现功能
+创建订单：
 
-- 登录注册和 JWT
-- 虚拟排队
-- 下单
-- 库存扣减
-- 支付
-- Redis 分布式锁和 Lua
-- 消息队列
-- k6 压力测试
-- WebSocket 或 SSE
-- 微服务
-- Kubernetes
-- 选座系统
+```powershell
+$headers = @{
+  "X-User-Email" = "user@ticketforge.local"
+  "Idempotency-Key" = [guid]::NewGuid().ToString()
+}
 
-## Roadmap
+$body = @{
+  ticketTierId = 1
+  quantity = 1
+} | ConvertTo-Json
 
-- Phase 2: 订单创建、库存预占和幂等键。
-- Phase 3: Redis 队列、临时库存锁定和超时释放。
-- Phase 4: 支付回调模拟、订单状态机和补偿流程。
-- Phase 5: 压力测试、瓶颈分析和可观测性增强。
+$order = Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8080/api/orders" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body $body
 
-## 测试命令
+$order
+```
 
-后端：
+用同一组 `$headers` 和 `$body` 再提交一次，会返回同一个订单，且 `idempotentReplay = true`。
 
-```bash
+查询订单：
+
+```powershell
+Invoke-RestMethod `
+  -Uri "http://localhost:8080/api/orders/$($order.orderNumber)" `
+  -Headers @{ "X-User-Email" = "user@ticketforge.local" }
+```
+
+取消订单：
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8080/api/orders/$($order.orderNumber)/cancel" `
+  -Headers @{ "X-User-Email" = "user@ticketforge.local" }
+```
+
+## 库存预占与防超卖
+
+创建订单在一个 PostgreSQL 事务中完成：
+
+1. 按 `X-User-Email` 锁定模拟用户行。
+2. 查询 `user_id + idempotency_key` 是否已有订单。
+3. 校验票档、演出状态和开票时间。
+4. 使用 PostgreSQL 条件 `UPDATE` 原子预占库存。
+5. 创建 `PENDING_PAYMENT` 订单。
+
+核心库存更新：
+
+```sql
+UPDATE ticket_inventory
+SET available_stock = available_stock - :quantity,
+    reserved_stock = reserved_stock + :quantity,
+    version = version + 1,
+    updated_at = CURRENT_TIMESTAMP
+WHERE ticket_tier_id = :ticketTierId
+  AND available_stock >= :quantity;
+```
+
+受影响行数为 `0` 时返回 `OUT_OF_STOCK`。任何时候都必须保持：
+
+```text
+available_stock >= 0
+reserved_stock >= 0
+sold_stock >= 0
+available_stock + reserved_stock + sold_stock = total_stock
+```
+
+## 幂等语义
+
+同一用户使用相同 `Idempotency-Key` 重复提交，只会创建一个订单并预占一次库存。应用层通过用户行 `PESSIMISTIC_WRITE` 锁串行化同一用户的重复提交，数据库唯一约束 `UNIQUE(user_id, idempotency_key)` 作为最终保护。
+
+## 取消与超时
+
+主动取消只允许取消 `PENDING_PAYMENT` 订单。取消时在同一事务中锁定订单、设置 `CANCELLED/cancelled_at`，并通过条件 `UPDATE` 将库存从 `reserved_stock` 释放回 `available_stock`。
+
+待支付订单默认 5 分钟过期：
+
+```yaml
+ticketforge:
+  orders:
+    reservation-ttl: PT5M
+    expiration-scan-delay-ms: 10000
+```
+
+调度器每批最多扫描 100 个过期待支付订单，逐个安全取消。业务代码使用注入的 `Clock`，测试可固定时间。
+
+## 测试
+
+默认测试不依赖 Docker、Redis 或外部数据库：
+
+```powershell
 cd backend
-./mvnw test
+.\mvnw.cmd test
 ```
+
+真实 PostgreSQL 集成测试使用 Maven profile：
+
+```powershell
+cd backend
+.\mvnw.cmd verify -Pintegration
+```
+
+集成测试使用 `ticketforge_test` 数据库，并覆盖并发库存防超卖和并发幂等提交。GitHub Actions 会启动 PostgreSQL 17 service 并运行该 profile。
 
 前端：
 
-```bash
+```powershell
 cd frontend
 npm ci
 npm run build
 ```
+
+## pgAdmin 检查
+
+Flyway：
+
+```sql
+SELECT version, description, success
+FROM flyway_schema_history
+ORDER BY installed_rank;
+```
+
+订单：
+
+```sql
+SELECT order_number, user_id, ticket_tier_id, quantity, unit_price,
+       total_amount, status, idempotency_key, expires_at,
+       cancelled_at, created_at
+FROM ticket_orders
+ORDER BY created_at DESC;
+```
+
+库存守恒：
+
+```sql
+SELECT tt.code, tt.total_stock, ti.available_stock, ti.reserved_stock,
+       ti.sold_stock,
+       ti.available_stock + ti.reserved_stock + ti.sold_stock AS calculated_total
+FROM ticket_tiers tt
+JOIN ticket_inventory ti ON ti.ticket_tier_id = tt.id
+ORDER BY tt.code;
+```
+
+每行 `calculated_total` 必须等于 `total_stock`。
+
+## 当前未实现
+
+- 登录注册和 JWT
+- 真实支付
+- Redis 业务逻辑
+- 虚拟排队
+- 消息队列
+- k6 压力测试
+- WebSocket/SSE
+- 微服务和 Kubernetes
+- 选座系统
 
 ## Git 提交规范
 
 使用 Conventional Commits：
 
 ```text
-feat: add event query API
-fix: correct inventory mapping
-docs: update local setup guide
-test: add event service coverage
-chore: update CI workflow
+feat: add idempotent order reservation
+fix: correct reservation rollback
+docs: update local postgres workflow
+test: add order concurrency integration tests
 ```
-
