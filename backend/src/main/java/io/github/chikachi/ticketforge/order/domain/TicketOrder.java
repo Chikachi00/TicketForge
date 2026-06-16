@@ -107,6 +107,12 @@ public class TicketOrder {
         this.updatedAt = cancelledAt;
     }
 
+    public void markPaid(Instant paidAt) {
+        this.status = OrderStatus.PAID;
+        this.paidAt = paidAt;
+        this.updatedAt = paidAt;
+    }
+
     public Long getId() {
         return id;
     }
@@ -149,6 +155,10 @@ public class TicketOrder {
 
     public Instant getCancelledAt() {
         return cancelledAt;
+    }
+
+    public Instant getPaidAt() {
+        return paidAt;
     }
 
     public Instant getCreatedAt() {

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
+import io.github.chikachi.ticketforge.payment.api.PaymentQueryResponse;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.json.JsonTest;
@@ -36,5 +37,23 @@ class EventSerializationTest {
         assertThat(json).contains("\"salesStartAt\":\"2026-07-01T01:00:00Z\"");
         assertThat(json).contains("\"price\":1280.00");
     }
-}
 
+    @Test
+    void serializesPaymentMoneyAndProcessedTimeInUtc() throws Exception {
+        PaymentQueryResponse response = new PaymentQueryResponse(
+                "PAY-1",
+                "TF-1",
+                new BigDecimal("1280.00"),
+                "CNY",
+                "SUCCESS",
+                "TICKETFORGE_SIMULATOR",
+                Instant.parse("2026-06-16T10:00:00Z"),
+                Instant.parse("2026-06-16T10:02:00Z")
+        );
+
+        String json = objectMapper.writeValueAsString(response);
+
+        assertThat(json).contains("\"amount\":1280.00");
+        assertThat(json).contains("\"processedAt\":\"2026-06-16T10:02:00Z\"");
+    }
+}

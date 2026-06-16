@@ -124,6 +124,7 @@ class OrderControllerTest {
                 "CANCELLED",
                 Instant.parse("2026-06-16T10:05:00Z"),
                 Instant.parse("2026-06-16T10:02:00Z"),
+                null,
                 Instant.parse("2026-06-16T10:00:00Z"),
                 false
         );
@@ -149,6 +150,7 @@ class OrderControllerTest {
                 "PENDING_PAYMENT",
                 Instant.parse("2026-06-16T10:05:00Z"),
                 null,
+                null,
                 Instant.parse("2026-06-16T10:00:00Z"),
                 replay
         );
@@ -164,6 +166,7 @@ class OrderControllerTest {
                 new BigDecimal("1280.00"),
                 "PENDING_PAYMENT",
                 Instant.parse("2026-06-16T10:05:00Z"),
+                null,
                 null,
                 Instant.parse("2026-06-16T10:00:00Z")
         );

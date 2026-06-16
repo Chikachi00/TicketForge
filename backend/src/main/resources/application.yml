@@ -49,3 +49,5 @@ ticketforge:
   orders:
     reservation-ttl: PT5M
     expiration-scan-delay-ms: 10000
+  payment:
+    callback-secret: ${TICKETFORGE_PAYMENT_CALLBACK_SECRET:ticketforge-local-dev-secret}

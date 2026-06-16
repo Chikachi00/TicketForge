@@ -2,28 +2,30 @@
 
 [中文 README](README.md)
 
-TicketForge is a high-concurrency ticketing-system lab inspired by platforms such as ePlus, Ticket Pia, and Damai.
+TicketForge is a high-concurrency ticketing-system lab inspired by ePlus, Ticket Pia, Damai, and similar platforms. The current stage is **Phase 3: Simulated Payment, Idempotent Callback and Order State Machine**.
 
-The current stage is **Phase 2: PostgreSQL Inventory Reservation and Idempotent Orders**. Phase 2 targets Windows local PostgreSQL and does not require Docker, Redis, payment, virtual queueing, or message queues.
+Phase 3 uses React + TypeScript, Spring Boot Java 21, and Windows local PostgreSQL. It does not use Docker, Redis, message queues, real payment providers, JWT, virtual queueing, or microservices.
 
 ## Current Features
 
 - Event and ticket-tier query APIs.
-- Database versioning with PostgreSQL and Flyway.
-- Pending order creation.
-- Atomic PostgreSQL inventory reservation.
-- Oversell and negative-stock prevention.
+- PostgreSQL schema versioning with Flyway.
+- Pending order creation with atomic inventory reservation.
 - Idempotent order submission with `Idempotency-Key`.
-- Manual order cancellation with stock release.
-- Automatic cancellation of unpaid orders after 5 minutes.
-- React UI for reservation, order details, countdown, cancellation, and recent orders.
+- Manual cancellation and scheduled expiration.
+- Simulated payment session creation.
+- HMAC-SHA256 payment callback verification.
+- Successful payment converts reserved stock to sold stock.
+- Failed payment keeps the order pending and keeps stock reserved.
+- Duplicate success callbacks are idempotent.
+- React UI for reservation, cancellation, simulated payment success/failure, and order refresh.
 
-## Tech Stack
+## Stack
 
 - Backend: Java 21, Spring Boot 3.5.15, Maven Wrapper, Spring Web, Spring Data JPA, Validation, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
 - Frontend: React, TypeScript, Vite, npm, CSS
 - Database: Windows local PostgreSQL
-- Optional infrastructure: `compose.yaml` remains in the repo, but Docker is not required in Phase 2
+- CI: GitHub Actions with PostgreSQL 17
 
 ## Local Database
 
@@ -31,13 +33,21 @@ The current stage is **Phase 2: PostgreSQL Inventory Reservation and Idempotent 
 Host: localhost
 Port: 5432
 Database: ticketforge
+Test database: ticketforge_test
 Username: ticketforge
 Password: ticketforge_dev
 ```
 
-Redis is not required. Redis health is disabled, so `/actuator/health` can remain `UP` without Redis.
+Proxy example:
 
-## Start Backend
+```powershell
+$env:HTTP_PROXY="http://127.0.0.1:7890"
+$env:HTTPS_PROXY="http://127.0.0.1:7890"
+git config --local http.proxy http://127.0.0.1:7890
+git config --local https.proxy http://127.0.0.1:7890
+```
+
+## Run Backend
 
 ```powershell
 cd backend
@@ -45,17 +55,14 @@ cd backend
 .\mvnw.cmd spring-boot:run
 ```
 
-Flyway files live in:
-
-```text
-backend/src/main/resources/db/migration/
-```
+Flyway migrations:
 
 - `V1__create_core_schema.sql`: core tables.
 - `V2__seed_demo_data.sql`: demo users, event, ticket tiers, and inventory.
-- `V3__prepare_order_reservation.sql`: cancellation timestamp, non-null idempotency key, pending-expiry index, order time constraints, and demo sales-start update.
+- `V3__prepare_order_reservation.sql`: reservation, cancellation, and expiration support.
+- `V4__prepare_simulated_payment.sql`: simulated payment fields, constraints, idempotency indexes, and one pending payment per order.
 
-## Start Frontend
+## Run Frontend
 
 ```powershell
 cd frontend
@@ -69,130 +76,85 @@ Open:
 - Health: http://localhost:8080/actuator/health
 - Events API: http://localhost:8080/api/events
 
-## Demo Identity
-
-There is no login system yet. The backend uses a request header as the current demo user:
-
-```http
-X-User-Email: user@ticketforge.local
-```
-
-The frontend labels this user as `Demo User`. Real authentication will replace this later.
-
 ## APIs
-
-Events:
 
 ```http
 GET /api/events
 GET /api/events/{eventId}
 GET /api/events/slug/{slug}
-```
-
-Orders:
-
-```http
 POST /api/orders
 GET /api/orders/{orderNumber}
 GET /api/orders/me
-GET /api/orders/me?status=PENDING_PAYMENT
 POST /api/orders/{orderNumber}/cancel
+POST /api/payments/orders/{orderNumber}
+GET /api/payments/{paymentTransactionId}
+POST /api/payments/callback
+POST /api/payment-simulator/{paymentTransactionId}/success
+POST /api/payment-simulator/{paymentTransactionId}/failure
 ```
 
-Create an order:
+The simulator endpoints are disabled in the `prod` profile.
 
-```powershell
-$headers = @{
-  "X-User-Email" = "user@ticketforge.local"
-  "Idempotency-Key" = [guid]::NewGuid().ToString()
-}
+## Payment Callback Signature
 
-$body = @{
-  ticketTierId = 1
-  quantity = 1
-} | ConvertTo-Json
-
-$order = Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8080/api/orders" `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body $body
-
-$order
-```
-
-Submitting the same `$headers` and `$body` again returns the same order with `idempotentReplay = true`.
-
-## Inventory Reservation
-
-Order creation runs in one PostgreSQL transaction:
-
-1. Lock the demo user row by `X-User-Email`.
-2. Check whether `user_id + idempotency_key` already exists.
-3. Validate ticket tier, event status, and sales start.
-4. Reserve inventory with an atomic PostgreSQL conditional `UPDATE`.
-5. Create the `PENDING_PAYMENT` order.
-
-The stock gate:
-
-```sql
-UPDATE ticket_inventory
-SET available_stock = available_stock - :quantity,
-    reserved_stock = reserved_stock + :quantity,
-    version = version + 1,
-    updated_at = CURRENT_TIMESTAMP
-WHERE ticket_tier_id = :ticketTierId
-  AND available_stock >= :quantity;
-```
-
-When the affected row count is `0`, the API returns `OUT_OF_STOCK`.
-
-Inventory invariant:
-
-```text
-available_stock >= 0
-reserved_stock >= 0
-sold_stock >= 0
-available_stock + reserved_stock + sold_stock = total_stock
-```
-
-## Idempotency
-
-The same user submitting the same `Idempotency-Key` repeatedly creates only one order and reserves stock once. The application serializes repeated submissions for the same user with a `PESSIMISTIC_WRITE` user-row lock. The database unique constraint `UNIQUE(user_id, idempotency_key)` remains the final guard.
-
-## Cancellation and Expiration
-
-Only `PENDING_PAYMENT` orders can be actively cancelled. Cancellation locks the order row, sets `CANCELLED/cancelled_at`, and releases reserved stock back to available stock in the same transaction.
-
-Pending orders expire after 5 minutes by default:
+Configuration:
 
 ```yaml
 ticketforge:
-  orders:
-    reservation-ttl: PT5M
-    expiration-scan-delay-ms: 10000
+  payment:
+    callback-secret: ${TICKETFORGE_PAYMENT_CALLBACK_SECRET:ticketforge-local-dev-secret}
 ```
 
-The scheduler scans up to 100 expired pending orders per batch and cancels them one by one. Core business logic uses an injected `Clock`.
+Signing string:
+
+```text
+providerEventId|paymentTransactionId|orderNumber|status|amount|currency|occurredAt
+```
+
+Amounts use exactly two decimal places, for example `1280.00`. Times are UTC ISO 8601 values such as `2026-06-16T10:02:00Z`. The backend verifies HMAC-SHA256 with UTF-8 input and constant-time comparison.
+
+## Payment State Machine
+
+Allowed:
+
+```text
+PENDING_PAYMENT -> PAID
+PENDING_PAYMENT -> CANCELLED
+```
+
+Reserved for later:
+
+```text
+PAID -> REFUNDED
+```
+
+Forbidden:
+
+```text
+CANCELLED -> PAID
+PAID -> CANCELLED
+CANCELLED -> PENDING_PAYMENT
+```
+
+Successful payment locks the payment row, locks the order row, atomically converts reserved stock to sold stock, marks the order `PAID`, and marks the payment `SUCCESS`. Failed payment marks only the payment as `FAILED`; the order remains `PENDING_PAYMENT`.
+
+Duplicate success callbacks return `idempotentReplay=true` and do not transfer inventory again. Payment vs cancellation and payment vs expiration races allow only one final order state and one inventory transition.
 
 ## Tests
 
-Default backend tests do not require Docker, Redis, or an external database:
+Default backend tests:
 
 ```powershell
 cd backend
 .\mvnw.cmd test
 ```
 
-Real PostgreSQL integration tests:
+PostgreSQL integration tests:
 
 ```powershell
 cd backend
 .\mvnw.cmd verify -Pintegration
 ```
-
-The integration profile uses `ticketforge_test` and includes concurrent oversell prevention plus concurrent idempotency tests. GitHub Actions starts PostgreSQL 17 and runs this profile.
 
 Frontend:
 
@@ -202,12 +164,12 @@ npm ci
 npm run build
 ```
 
-## Not Implemented Yet
+## Not Implemented
 
 - Registration, login, and JWT
-- Real payment
-- Redis business logic
-- Virtual queue
+- Real payment providers and refunds
+- Redis business logic, Redis locks, Lua
+- Virtual queueing
 - Message queues
 - k6 load tests
 - WebSocket/SSE

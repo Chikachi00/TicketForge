@@ -22,6 +22,7 @@ public class OrderMapper {
                 order.getStatus().name(),
                 order.getExpiresAt(),
                 order.getCancelledAt(),
+                order.getPaidAt(),
                 order.getCreatedAt(),
                 idempotentReplay
         );
@@ -38,6 +39,7 @@ public class OrderMapper {
                 order.getStatus().name(),
                 order.getExpiresAt(),
                 order.getCancelledAt(),
+                order.getPaidAt(),
                 order.getCreatedAt()
         );
     }

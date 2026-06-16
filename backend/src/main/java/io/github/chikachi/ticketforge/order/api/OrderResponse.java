@@ -16,6 +16,7 @@ public record OrderResponse(
         String status,
         Instant expiresAt,
         Instant cancelledAt,
+        Instant paidAt,
         Instant createdAt,
         boolean idempotentReplay
 ) {

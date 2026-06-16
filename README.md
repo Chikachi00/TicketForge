@@ -2,28 +2,31 @@
 
 [English README](README.en.md)
 
-TicketForge 是一个模拟 ePlus、Ticket Pia、大麦等票务平台核心交易流程的高并发票务系统实验项目。
+TicketForge 是一个模拟 ePlus、Ticket Pia、大麦等票务平台核心交易流程的高并发票务系统实验项目。当前阶段是 **Phase 3: Simulated Payment, Idempotent Callback and Order State Machine**。
 
-当前阶段是 **Phase 2: PostgreSQL Inventory Reservation and Idempotent Orders**。本阶段推荐在 Windows 本地运行 PostgreSQL，不依赖 Docker、Redis、支付、虚拟排队或消息队列。
+本阶段仍采用 React + TypeScript、Spring Boot Java 21、Windows 本地 PostgreSQL。不要使用 Docker、Redis、消息队列、真实第三方支付、JWT、虚拟排队或微服务。
 
 ## 当前功能
 
-- 演出和票档查询。
-- PostgreSQL/Flyway 管理数据库版本。
-- 创建待支付订单。
-- PostgreSQL 原子条件更新实现库存预占。
-- 防止库存超卖和负库存。
-- `Idempotency-Key` 幂等订单提交。
+- 演出与票档查询。
+- PostgreSQL + Flyway 管理数据库版本。
+- 创建 `PENDING_PAYMENT` 订单并原子预占库存。
+- 订单幂等提交：`Idempotency-Key`。
 - 主动取消订单并释放库存。
-- 5 分钟待支付超时自动取消并释放库存。
-- React 页面支持预占、订单查看、倒计时、取消和我的订单。
+- 待支付订单超时取消。
+- 模拟支付会话创建。
+- HMAC-SHA256 支付回调验签。
+- 支付成功后库存从 `reserved_stock` 转为 `sold_stock`。
+- 支付失败后订单保持待支付，库存继续预占，可在过期前重新发起支付。
+- 重复成功回调幂等处理。
+- React 页面支持预占、取消、模拟支付成功/失败、订单状态刷新。
 
 ## 技术栈
 
 - Backend: Java 21, Spring Boot 3.5.15, Maven Wrapper, Spring Web, Spring Data JPA, Validation, Actuator, Flyway, PostgreSQL Driver, JUnit 5, Mockito
 - Frontend: React, TypeScript, Vite, npm, CSS
 - Database: Windows 本地 PostgreSQL
-- Optional infrastructure: `compose.yaml` 仍保留 PostgreSQL/Redis/Adminer，但 Phase 2 不要求使用 Docker
+- CI: GitHub Actions + PostgreSQL 17 service
 
 ## 目录结构
 
@@ -41,19 +44,16 @@ TicketForge/
 
 ## 本地环境
 
-推荐数据库：
-
 ```text
 Host: localhost
 Port: 5432
 Database: ticketforge
+Test database: ticketforge_test
 Username: ticketforge
 Password: ticketforge_dev
 ```
 
-Phase 2 不需要启动 Redis。后端已关闭 Redis health indicator，因此 Redis 未运行时 `/actuator/health` 仍可为 `UP`。
-
-Clash 代理：
+Clash 代理示例：
 
 ```powershell
 $env:HTTP_PROXY="http://127.0.0.1:7890"
@@ -78,7 +78,8 @@ backend/src/main/resources/db/migration/
 
 - `V1__create_core_schema.sql`: 核心表。
 - `V2__seed_demo_data.sql`: 演示用户、演出、票档和库存。
-- `V3__prepare_order_reservation.sql`: 订单取消时间、幂等键非空、待支付超时索引、订单时间约束，并把演示演出开票时间移到过去。
+- `V3__prepare_order_reservation.sql`: 订单预占、取消和过期所需结构。
+- `V4__prepare_simulated_payment.sql`: 模拟支付字段、金额/币种约束、回调幂等索引、每订单一个 pending 支付索引。
 
 ## 启动前端
 
@@ -94,15 +95,13 @@ npm run dev
 - Health: http://localhost:8080/actuator/health
 - Events API: http://localhost:8080/api/events
 
-## 模拟用户身份
+## 模拟身份
 
 当前没有登录系统。前后端使用请求头模拟当前用户：
 
 ```http
 X-User-Email: user@ticketforge.local
 ```
-
-前端页面标记为 `Demo User`。这只是开发阶段模拟身份，后续会被真实认证替换。
 
 ## API
 
@@ -120,119 +119,133 @@ GET /api/events/slug/{slug}
 POST /api/orders
 GET /api/orders/{orderNumber}
 GET /api/orders/me
-GET /api/orders/me?status=PENDING_PAYMENT
 POST /api/orders/{orderNumber}/cancel
 ```
 
-创建订单：
+支付：
+
+```http
+POST /api/payments/orders/{orderNumber}
+GET /api/payments/{paymentTransactionId}
+POST /api/payments/callback
+POST /api/payment-simulator/{paymentTransactionId}/success
+POST /api/payment-simulator/{paymentTransactionId}/failure
+```
+
+模拟器端点仅在非 `prod` profile 注册。
+
+## 支付会话
+
+创建支付会话：
 
 ```powershell
-$headers = @{
+$paymentHeaders = @{
   "X-User-Email" = "user@ticketforge.local"
   "Idempotency-Key" = [guid]::NewGuid().ToString()
 }
 
-$body = @{
-  ticketTierId = 1
-  quantity = 1
-} | ConvertTo-Json
-
-$order = Invoke-RestMethod `
+$payment = Invoke-RestMethod `
   -Method Post `
-  -Uri "http://localhost:8080/api/orders" `
-  -Headers $headers `
-  -ContentType "application/json" `
-  -Body $body
-
-$order
+  -Uri "http://localhost:8080/api/payments/orders/$($order.orderNumber)" `
+  -Headers $paymentHeaders
 ```
 
-用同一组 `$headers` 和 `$body` 再提交一次，会返回同一个订单，且 `idempotentReplay = true`。
+规则：
 
-查询订单：
+- 订单必须属于当前用户。
+- 订单状态必须为 `PENDING_PAYMENT`。
+- 订单不能过期。
+- 金额只从数据库订单读取，客户端不能传金额。
+- 同一订单已有 `PENDING` 支付记录时返回原支付会话。
 
-```powershell
-Invoke-RestMethod `
-  -Uri "http://localhost:8080/api/orders/$($order.orderNumber)" `
-  -Headers @{ "X-User-Email" = "user@ticketforge.local" }
+## HMAC 回调
+
+配置：
+
+```yaml
+ticketforge:
+  payment:
+    callback-secret: ${TICKETFORGE_PAYMENT_CALLBACK_SECRET:ticketforge-local-dev-secret}
 ```
 
-取消订单：
+签名字符串：
 
-```powershell
-Invoke-RestMethod `
-  -Method Post `
-  -Uri "http://localhost:8080/api/orders/$($order.orderNumber)/cancel" `
-  -Headers @{ "X-User-Email" = "user@ticketforge.local" }
+```text
+providerEventId|paymentTransactionId|orderNumber|status|amount|currency|occurredAt
 ```
 
-## 库存预占与防超卖
+金额固定为两位小数，例如 `1280.00`。时间使用 UTC ISO 8601，例如 `2026-06-16T10:02:00Z`。签名算法为 HMAC-SHA256，UTF-8 编码，服务端使用常量时间比较。
 
-创建订单在一个 PostgreSQL 事务中完成：
+## 状态机和库存
 
-1. 按 `X-User-Email` 锁定模拟用户行。
-2. 查询 `user_id + idempotency_key` 是否已有订单。
-3. 校验票档、演出状态和开票时间。
-4. 使用 PostgreSQL 条件 `UPDATE` 原子预占库存。
-5. 创建 `PENDING_PAYMENT` 订单。
+允许：
+
+```text
+PENDING_PAYMENT -> PAID
+PENDING_PAYMENT -> CANCELLED
+```
+
+预留：
+
+```text
+PAID -> REFUNDED
+```
+
+禁止：
+
+```text
+CANCELLED -> PAID
+PAID -> CANCELLED
+CANCELLED -> PENDING_PAYMENT
+```
+
+支付成功事务顺序：
+
+1. 锁定 `payment_records`。
+2. 锁定 `ticket_orders`。
+3. 原子更新 `ticket_inventory`，将 reserved 转为 sold。
+4. 设置订单 `PAID/paid_at`。
+5. 设置支付 `SUCCESS/processed_at/provider_event_id`。
 
 核心库存更新：
 
 ```sql
 UPDATE ticket_inventory
-SET available_stock = available_stock - :quantity,
-    reserved_stock = reserved_stock + :quantity,
+SET reserved_stock = reserved_stock - :quantity,
+    sold_stock = sold_stock + :quantity,
     version = version + 1,
     updated_at = CURRENT_TIMESTAMP
 WHERE ticket_tier_id = :ticketTierId
-  AND available_stock >= :quantity;
+  AND reserved_stock >= :quantity;
 ```
 
-受影响行数为 `0` 时返回 `OUT_OF_STOCK`。任何时候都必须保持：
+支付失败只设置支付记录为 `FAILED`，订单仍为 `PENDING_PAYMENT`，库存仍在 `reserved_stock`。
+
+重复成功回调返回 `idempotentReplay=true`，不会再次转移库存。支付与取消、支付与过期并发时，只允许一个最终状态和一次库存转移。
+
+库存守恒：
 
 ```text
-available_stock >= 0
-reserved_stock >= 0
-sold_stock >= 0
 available_stock + reserved_stock + sold_stock = total_stock
 ```
 
-## 幂等语义
-
-同一用户使用相同 `Idempotency-Key` 重复提交，只会创建一个订单并预占一次库存。应用层通过用户行 `PESSIMISTIC_WRITE` 锁串行化同一用户的重复提交，数据库唯一约束 `UNIQUE(user_id, idempotency_key)` 作为最终保护。
-
-## 取消与超时
-
-主动取消只允许取消 `PENDING_PAYMENT` 订单。取消时在同一事务中锁定订单、设置 `CANCELLED/cancelled_at`，并通过条件 `UPDATE` 将库存从 `reserved_stock` 释放回 `available_stock`。
-
-待支付订单默认 5 分钟过期：
-
-```yaml
-ticketforge:
-  orders:
-    reservation-ttl: PT5M
-    expiration-scan-delay-ms: 10000
-```
-
-调度器每批最多扫描 100 个过期待支付订单，逐个安全取消。业务代码使用注入的 `Clock`，测试可固定时间。
-
 ## 测试
 
-默认测试不依赖 Docker、Redis 或外部数据库：
+默认后端测试不依赖 Docker、Redis 或外部 PostgreSQL：
 
 ```powershell
 cd backend
 .\mvnw.cmd test
 ```
 
-真实 PostgreSQL 集成测试使用 Maven profile：
+真实 PostgreSQL 集成测试：
 
 ```powershell
 cd backend
 .\mvnw.cmd verify -Pintegration
 ```
 
-集成测试使用 `ticketforge_test` 数据库，并覆盖并发库存防超卖和并发幂等提交。GitHub Actions 会启动 PostgreSQL 17 service 并运行该 profile。
+集成测试使用 `ticketforge_test`，覆盖并发预占、幂等订单、重复支付回调、支付与取消竞态、支付与过期竞态。
 
 前端：
 
@@ -242,7 +255,7 @@ npm ci
 npm run build
 ```
 
-## pgAdmin 检查
+## PostgreSQL 检查
 
 Flyway：
 
@@ -252,14 +265,15 @@ FROM flyway_schema_history
 ORDER BY installed_rank;
 ```
 
-订单：
+支付与订单：
 
 ```sql
-SELECT order_number, user_id, ticket_tier_id, quantity, unit_price,
-       total_amount, status, idempotency_key, expires_at,
-       cancelled_at, created_at
-FROM ticket_orders
-ORDER BY created_at DESC;
+SELECT o.order_number, o.status AS order_status,
+       p.payment_transaction_id, p.status AS payment_status,
+       p.provider_event_id, p.amount, p.currency, p.processed_at
+FROM ticket_orders o
+LEFT JOIN payment_records p ON p.order_id = o.id
+ORDER BY o.created_at DESC;
 ```
 
 库存守恒：
@@ -273,18 +287,16 @@ JOIN ticket_inventory ti ON ti.ticket_tier_id = tt.id
 ORDER BY tt.code;
 ```
 
-每行 `calculated_total` 必须等于 `total_stock`。
-
 ## 当前未实现
 
-- 登录注册和 JWT
-- 真实支付
-- Redis 业务逻辑
+- 注册、登录、JWT
+- 真实支付网关、退款
+- Redis 业务逻辑、Redis 锁、Lua
 - 虚拟排队
 - 消息队列
 - k6 压力测试
 - WebSocket/SSE
-- 微服务和 Kubernetes
+- 微服务、Kubernetes
 - 选座系统
 
 ## Git 提交规范
@@ -292,8 +304,8 @@ ORDER BY tt.code;
 使用 Conventional Commits：
 
 ```text
-feat: add idempotent order reservation
-fix: correct reservation rollback
-docs: update local postgres workflow
-test: add order concurrency integration tests
+feat: add simulated payment callback handling
+fix: preserve inventory invariant during payment race
+docs: update phase 3 payment workflow
+test: add payment callback concurrency tests
 ```

@@ -297,6 +297,10 @@ h1 {
   width: 100%;
 }
 
+.full-width-action {
+  width: 100%;
+}
+
 .primary-action:disabled,
 .secondary-action:disabled,
 .purchase-controls select:disabled {
@@ -343,6 +347,21 @@ h1 {
   font-weight: 800;
   margin: 0;
   text-align: right;
+}
+
+.payment-box {
+  background: #f6f8f4;
+  border: 1px solid #dde3d8;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.payment-actions {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
 }
 
 .orders-heading {
@@ -448,5 +467,9 @@ h1 {
 
   .primary-action {
     width: 100%;
+  }
+
+  .payment-actions {
+    grid-template-columns: 1fr;
   }
 }

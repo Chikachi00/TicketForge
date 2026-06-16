@@ -4,12 +4,18 @@ import {
   EventSummary,
   OrderResponse,
   OrderSummary,
+  PaymentQueryResponse,
+  PaymentSessionResponse,
   cancelOrder,
   createOrder,
+  createPaymentSession,
   fetchEvent,
   fetchEvents,
   fetchMyOrders,
-  fetchOrder
+  fetchOrder,
+  fetchPayment,
+  simulatePaymentFailure,
+  simulatePaymentSuccess
 } from './api';
 import './App.css';
 
@@ -21,10 +27,11 @@ type ReservationIntent = {
   idempotencyKey: string;
 };
 
-const currencyFormatter = new Intl.NumberFormat('ja-JP', {
+const currencyFormatter = new Intl.NumberFormat('zh-CN', {
   style: 'currency',
-  currency: 'JPY',
-  maximumFractionDigits: 0
+  currency: 'CNY',
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
 });
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -49,16 +56,20 @@ function App() {
   const [selectedEvent, setSelectedEvent] = useState<EventDetail | null>(null);
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [activeOrder, setActiveOrder] = useState<OrderResponse | null>(null);
+  const [paymentSession, setPaymentSession] = useState<PaymentSessionResponse | null>(null);
+  const [settledPayment, setSettledPayment] = useState<PaymentQueryResponse | null>(null);
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const [submittingTierId, setSubmittingTierId] = useState<number | null>(null);
   const [failedIntent, setFailedIntent] = useState<ReservationIntent | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [paymentBusy, setPaymentBusy] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
   const [listState, setListState] = useState<LoadState>('idle');
   const [detailState, setDetailState] = useState<LoadState>('idle');
   const [orderState, setOrderState] = useState<LoadState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
+  const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -179,6 +190,9 @@ function App() {
     createOrder(ticketTierId, quantity, idempotencyKey)
       .then((order) => {
         setActiveOrder(order);
+        setPaymentSession(null);
+        setSettledPayment(null);
+        setPaymentMessage(null);
         setOrderState('loaded');
         refreshCurrentEvent();
         refreshOrders();
@@ -198,11 +212,55 @@ function App() {
     cancelOrder(activeOrder.orderNumber)
       .then((order) => {
         setActiveOrder(order);
+        setPaymentSession(null);
+        setSettledPayment(null);
+        setPaymentMessage(null);
         refreshCurrentEvent();
         refreshOrders();
       })
       .catch((exception: Error) => setOrderError(exception.message))
       .finally(() => setCancelling(false));
+  }
+
+  function beginPayment() {
+    if (!activeOrder) return;
+    setPaymentBusy(true);
+    setOrderError(null);
+    setPaymentMessage(null);
+    createPaymentSession(activeOrder.orderNumber, crypto.randomUUID())
+      .then((session) => {
+        setPaymentSession(session);
+        setPaymentMessage('Payment session is ready in the local simulator.');
+      })
+      .catch((exception: Error) => setOrderError(exception.message))
+      .finally(() => setPaymentBusy(false));
+  }
+
+  function settlePayment(result: 'success' | 'failure') {
+    if (!paymentSession) return;
+    setPaymentBusy(true);
+    setOrderError(null);
+    setPaymentMessage(null);
+    const action = result === 'success' ? simulatePaymentSuccess : simulatePaymentFailure;
+    action(paymentSession.paymentTransactionId)
+      .then(() => Promise.all([
+        fetchOrder(paymentSession.orderNumber),
+        fetchPayment(paymentSession.paymentTransactionId).catch(() => null)
+      ]))
+      .then(([order, payment]) => {
+        setActiveOrder(order);
+        setSettledPayment(payment);
+        if (order.status === 'PAID') {
+          setPaymentMessage('Payment succeeded. Reserved stock has been converted to sold stock.');
+        } else {
+          setPaymentMessage('Payment failed. The order remains pending until it is paid, cancelled, or expired.');
+          setPaymentSession(null);
+        }
+        refreshCurrentEvent();
+        refreshOrders();
+      })
+      .catch((exception: Error) => setOrderError(exception.message))
+      .finally(() => setPaymentBusy(false));
   }
 
   return (
@@ -211,7 +269,7 @@ function App() {
         <div>
           <p className="eyebrow">TicketForge</p>
           <h1>TicketForge</h1>
-          <p className="subtitle">高并发票务系统实验项目</p>
+          <p className="subtitle">High-concurrency ticketing system lab</p>
         </div>
         <div className="user-badge">
           <span>Demo User</span>
@@ -359,19 +417,81 @@ function App() {
                 </div>
                 <div>
                   <dt>Countdown</dt>
-                  <dd>{activeOrder.status === 'PENDING_PAYMENT' ? formatRemaining(remainingMs) : 'Released'}</dd>
+                  <dd>{activeOrder.status === 'PENDING_PAYMENT' ? formatRemaining(remainingMs) : activeOrder.status === 'PAID' ? 'Paid' : 'Released'}</dd>
                 </div>
+                {activeOrder.paidAt && (
+                  <div>
+                    <dt>Paid at</dt>
+                    <dd>{formatDate(activeOrder.paidAt)}</dd>
+                  </div>
+                )}
               </dl>
               {activeOrder.idempotentReplay && <p className="state">Returned from an idempotent replay.</p>}
               {activeOrder.status === 'CANCELLED' && <p className="state">Inventory has been released.</p>}
-              <button
-                className="secondary-action"
-                type="button"
-                onClick={cancelActiveOrder}
-                disabled={cancelling || activeOrder.status !== 'PENDING_PAYMENT'}
-              >
-                {cancelling ? 'Cancelling...' : 'Cancel order'}
-              </button>
+              {activeOrder.status === 'PAID' && <p className="state">Ticket sold. Reserved stock is now sold stock.</p>}
+              {activeOrder.status === 'PENDING_PAYMENT' && (
+                <>
+                  <button
+                    className="primary-action full-width-action"
+                    type="button"
+                    onClick={beginPayment}
+                    disabled={paymentBusy}
+                  >
+                    {paymentBusy && !paymentSession ? 'Creating payment...' : '模拟支付'}
+                  </button>
+                  {paymentSession && (
+                    <div className="payment-box">
+                      <span className="tier-code">Simulator</span>
+                      <dl>
+                        <div>
+                          <dt>Transaction</dt>
+                          <dd>{paymentSession.paymentTransactionId}</dd>
+                        </div>
+                        <div>
+                          <dt>Amount</dt>
+                          <dd>{currencyFormatter.format(paymentSession.amount)}</dd>
+                        </div>
+                        <div>
+                          <dt>Currency</dt>
+                          <dd>{paymentSession.currency}</dd>
+                        </div>
+                      </dl>
+                      <div className="payment-actions">
+                        <button
+                          className="primary-action"
+                          type="button"
+                          onClick={() => settlePayment('success')}
+                          disabled={paymentBusy}
+                        >
+                          Simulate success
+                        </button>
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          onClick={() => settlePayment('failure')}
+                          disabled={paymentBusy}
+                        >
+                          Simulate failure
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    onClick={cancelActiveOrder}
+                    disabled={cancelling || paymentBusy}
+                  >
+                    {cancelling ? 'Cancelling...' : 'Cancel order'}
+                  </button>
+                </>
+              )}
+              {paymentMessage && <p className="state">{paymentMessage}</p>}
+              {settledPayment?.processedAt && (
+                <p className="state">
+                  {settledPayment.status} via {settledPayment.paymentTransactionId} at {formatDate(settledPayment.processedAt)}
+                </p>
+              )}
             </article>
           )}
 
@@ -386,7 +506,14 @@ function App() {
                 key={order.orderNumber}
                 className="order-list-item"
                 type="button"
-                onClick={() => fetchOrder(order.orderNumber).then(setActiveOrder).catch(() => undefined)}
+                onClick={() => fetchOrder(order.orderNumber)
+                  .then((loadedOrder) => {
+                    setActiveOrder(loadedOrder);
+                    setPaymentSession(null);
+                    setSettledPayment(null);
+                    setPaymentMessage(null);
+                  })
+                  .catch(() => undefined)}
               >
                 <strong>{order.orderNumber}</strong>
                 <span>

@@ -30,4 +30,16 @@ public interface TicketInventoryRepository extends JpaRepository<TicketInventory
               AND reserved_stock >= :quantity
             """, nativeQuery = true)
     int release(Long ticketTierId, int quantity);
+
+    @Modifying
+    @Query(value = """
+            UPDATE ticket_inventory
+            SET reserved_stock = reserved_stock - :quantity,
+                sold_stock = sold_stock + :quantity,
+                version = version + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE ticket_tier_id = :ticketTierId
+              AND reserved_stock >= :quantity
+            """, nativeQuery = true)
+    int sellReserved(Long ticketTierId, int quantity);
 }

@@ -48,6 +48,17 @@ public interface TicketOrderRepository extends JpaRepository<TicketOrder, Long> 
     @Query("""
             select o
             from TicketOrder o
+            join fetch o.user
+            join fetch o.event
+            join fetch o.ticketTier
+            where o.orderNumber = :orderNumber
+            """)
+    Optional<TicketOrder> findDetailedByOrderNumberForUpdate(String orderNumber);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            select o
+            from TicketOrder o
             join fetch o.event
             join fetch o.ticketTier
             where o.orderNumber = :orderNumber

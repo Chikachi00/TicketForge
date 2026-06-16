@@ -41,6 +41,7 @@ export type OrderResponse = {
   status: string;
   expiresAt: string;
   cancelledAt: string | null;
+  paidAt: string | null;
   createdAt: string;
   idempotentReplay: boolean;
 };
@@ -55,10 +56,34 @@ export type OrderSummary = {
   status: string;
   expiresAt: string;
   cancelledAt: string | null;
+  paidAt: string | null;
   createdAt: string;
 };
 
 const DEMO_USER_EMAIL = 'user@ticketforge.local';
+
+export type PaymentSessionResponse = {
+  paymentTransactionId: string;
+  orderNumber: string;
+  amount: number;
+  currency: string;
+  status: string;
+  createdAt: string;
+};
+
+export type PaymentQueryResponse = PaymentSessionResponse & {
+  provider: string;
+  processedAt: string | null;
+};
+
+export type PaymentCallbackResponse = {
+  providerEventId: string;
+  paymentTransactionId: string;
+  orderNumber: string;
+  status: string;
+  idempotentReplay: boolean;
+  processedAt: string | null;
+};
 
 async function requestJson<T>(path: string): Promise<T> {
   const response = await fetch(path, {
@@ -139,5 +164,46 @@ export function cancelOrder(orderNumber: string): Promise<OrderResponse> {
       Accept: 'application/json',
       'X-User-Email': DEMO_USER_EMAIL
     }
+  });
+}
+
+export function createPaymentSession(orderNumber: string, idempotencyKey: string): Promise<PaymentSessionResponse> {
+  return sendJson<PaymentSessionResponse>(`/api/payments/orders/${orderNumber}`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'X-User-Email': DEMO_USER_EMAIL,
+      'Idempotency-Key': idempotencyKey
+    }
+  });
+}
+
+export function fetchPayment(paymentTransactionId: string): Promise<PaymentQueryResponse> {
+  return sendJson<PaymentQueryResponse>(`/api/payments/${paymentTransactionId}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+      'X-User-Email': DEMO_USER_EMAIL
+    }
+  });
+}
+
+export function simulatePaymentSuccess(paymentTransactionId: string): Promise<PaymentCallbackResponse> {
+  return sendJson<PaymentCallbackResponse>(`/api/payment-simulator/${paymentTransactionId}/success`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json'
+    }
+  });
+}
+
+export function simulatePaymentFailure(paymentTransactionId: string): Promise<PaymentCallbackResponse> {
+  return sendJson<PaymentCallbackResponse>(`/api/payment-simulator/${paymentTransactionId}/failure`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ reason: 'SIMULATED_PAYMENT_DECLINED' })
   });
 }

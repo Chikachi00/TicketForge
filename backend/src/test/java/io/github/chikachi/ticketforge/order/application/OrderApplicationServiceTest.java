@@ -175,6 +175,19 @@ class OrderApplicationServiceTest {
     }
 
     @Test
+    void paidOrderCannotBeCancelled() {
+        TicketOrder order = pendingOrder("TF-20260616-PAID", "paid-key", 1);
+        order.markPaid(NOW.minusSeconds(10));
+        when(appUserRepository.findByEmail(user.getEmail())).thenReturn(Optional.of(user));
+        when(ticketOrderRepository.findDetailedByOrderNumberAndUserIdForUpdate(order.getOrderNumber(), 1L)).thenReturn(Optional.of(order));
+
+        assertThatThrownBy(() -> service.cancelOrder(user.getEmail(), order.getOrderNumber()))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("cannot be cancelled");
+        verify(ticketInventoryRepository, never()).release(anyLong(), anyInt());
+    }
+
+    @Test
     void expiresPendingOrderAndRestoresInventory() {
         TicketOrder order = pendingOrder("TF-20260616-EXPIRE", "expire-key", 1);
         when(ticketOrderRepository.findDetailedPendingByOrderNumberForUpdate(order.getOrderNumber())).thenReturn(Optional.of(order));

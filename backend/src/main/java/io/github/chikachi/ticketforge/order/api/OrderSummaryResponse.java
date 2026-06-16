@@ -13,6 +13,7 @@ public record OrderSummaryResponse(
         String status,
         Instant expiresAt,
         Instant cancelledAt,
+        Instant paidAt,
         Instant createdAt
 ) {
 }
