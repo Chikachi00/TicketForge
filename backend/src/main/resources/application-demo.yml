@@ -1,0 +1,10 @@
+spring:
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/ticketforge}
+    username: ${SPRING_DATASOURCE_USERNAME:ticketforge}
+    password: ${SPRING_DATASOURCE_PASSWORD:ticketforge_dev}
+
+ticketforge:
+  demo:
+    enabled: true
+    secret: ${TICKETFORGE_DEMO_SECRET:ticketforge-local-demo-secret}

@@ -1,6 +1,6 @@
 import http from 'k6/http';
 import { config, loadUserEmail } from '../config/environments.js';
-import { eventBySlug, getLoadTestState, headers, resetLoadTest, uuid } from '../lib/api.js';
+import { eventBySlug, getLoadTestState, orderCreateRequestOptions, resetLoadTest, uuid } from '../lib/api.js';
 import { assertSingleOrder, assertState, parseJson, recordOrderCreate } from '../lib/assertions.js';
 import { correctnessThresholds, provisionalPerformanceThresholds } from '../lib/metrics.js';
 import { summaryOutputs } from '../lib/summary.js';
@@ -26,13 +26,13 @@ export default function (fixture) {
     'POST',
     `${config.baseUrl}/api/orders`,
     JSON.stringify({ ticketTierId: fixture.ticketTierId, quantity: 1 }),
-    {
-      headers: headers({
+    orderCreateRequestOptions(
+      {
         'X-User-Email': user,
         'Idempotency-Key': idempotencyKey
-      }),
-      tags: { name: 'order-create-idempotent' }
-    }
+      },
+      { name: 'order-create-idempotent' }
+    )
   ]);
   const responses = http.batch(batch);
   const orderNumbers = [];

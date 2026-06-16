@@ -1,6 +1,6 @@
 # TicketForge Architecture
 
-TicketForge remains a modular monolith. The backend is one Spring Boot application, organized by business area. Phase 4 focuses on measuring the existing PostgreSQL transaction model before adding Redis, queues, or distributed deployment.
+TicketForge remains a modular monolith. The backend is one Spring Boot application, organized by business area. Portfolio v1 focuses on demonstrating the existing PostgreSQL transaction model before adding Redis, queues, or distributed deployment.
 
 ## Runtime Shape
 
@@ -15,8 +15,11 @@ TicketForge remains a modular monolith. The backend is one Spring Boot applicati
 - Default profile: normal local development using `ticketforge`.
 - `integration` Maven profile: PostgreSQL integration tests using `ticketforge_test`.
 - Spring `loadtest` profile: dedicated performance/correctness runs using `ticketforge_loadtest`.
+- Spring `demo` profile: local portfolio demo tools using `ticketforge`.
 
 The loadtest management controller is only registered in the `loadtest` profile. It is not available in default, dev, or prod.
+
+The demo management controller is only registered in the `demo` profile and is explicitly excluded from `prod`.
 
 ## Phase 4 Data Flow
 

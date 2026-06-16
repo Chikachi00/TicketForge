@@ -1,16 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  EventDetail,
-  EventSummary,
-  OrderResponse,
-  OrderSummary,
-  PaymentQueryResponse,
-  PaymentSessionResponse,
   cancelOrder,
   createOrder,
   createPaymentSession,
-  fetchEvent,
-  fetchEvents,
   fetchMyOrders,
   fetchOrder,
   fetchPayment,
@@ -18,42 +10,32 @@ import {
   simulatePaymentSuccess
 } from './api';
 import './App.css';
-
-type LoadState = 'idle' | 'loading' | 'loaded' | 'empty' | 'error';
-
-type ReservationIntent = {
-  ticketTierId: number;
-  quantity: number;
-  idempotencyKey: string;
-};
-
-const currencyFormatter = new Intl.NumberFormat('zh-CN', {
-  style: 'currency',
-  currency: 'CNY',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2
-});
-
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: 'medium',
-  timeStyle: 'short'
-});
-
-function formatDate(value: string) {
-  return dateFormatter.format(new Date(value));
-}
-
-function formatRemaining(milliseconds: number) {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
+import { ActiveOrderPanel } from './components/ActiveOrderPanel';
+import { AdminDashboard } from './components/AdminDashboard';
+import { AppHeader } from './components/AppHeader';
+import { DemoGuide } from './components/DemoGuide';
+import { EventDetail } from './components/EventDetail';
+import { EventList } from './components/EventList';
+import { HowItWorks } from './components/HowItWorks';
+import { InventoryOverview } from './components/InventoryOverview';
+import { OperationTimeline } from './components/OperationTimeline';
+import { RecentOrders } from './components/RecentOrders';
+import { useActiveOrderPolling } from './hooks/useActiveOrder';
+import { useDemoDashboard } from './hooks/useDemoDashboard';
+import { useEvents } from './hooks/useEvents';
+import {
+  LoadState,
+  OrderResponse,
+  OrderSummary,
+  PaymentQueryResponse,
+  PaymentSessionResponse,
+  ReservationIntent,
+  TabKey,
+  TimelineEntry
+} from './types';
 
 function App() {
-  const [events, setEvents] = useState<EventSummary[]>([]);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<EventDetail | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>('purchase');
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [activeOrder, setActiveOrder] = useState<OrderResponse | null>(null);
   const [paymentSession, setPaymentSession] = useState<PaymentSessionResponse | null>(null);
@@ -63,120 +45,56 @@ function App() {
   const [failedIntent, setFailedIntent] = useState<ReservationIntent | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [paymentBusy, setPaymentBusy] = useState(false);
-  const [nowMs, setNowMs] = useState(Date.now());
-  const [listState, setListState] = useState<LoadState>('idle');
-  const [detailState, setDetailState] = useState<LoadState>('idle');
   const [orderState, setOrderState] = useState<LoadState>('idle');
-  const [error, setError] = useState<string | null>(null);
   const [orderError, setOrderError] = useState<string | null>(null);
   const [paymentMessage, setPaymentMessage] = useState<string | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
 
-  useEffect(() => {
-    let active = true;
-    setListState('loading');
-    fetchEvents()
-      .then((data) => {
-        if (!active) return;
-        setEvents(data);
-        setSelectedId(data[0]?.id ?? null);
-        setListState(data.length === 0 ? 'empty' : 'loaded');
-      })
-      .catch(() => {
-        if (!active) return;
-        setError('Unable to load events from the backend.');
-        setListState('error');
-      });
-    return () => {
-      active = false;
-    };
+  const events = useEvents();
+  const demo = useDemoDashboard();
+
+  const refreshOrders = useCallback(() => {
+    return fetchMyOrders()
+      .then(setOrders)
+      .catch(() => setOrderError('Unable to refresh orders.'));
   }, []);
 
   useEffect(() => {
-    let active = true;
-    fetchMyOrders()
-      .then((data) => {
-        if (active) setOrders(data);
-      })
-      .catch(() => {
-        if (active) setOrderError('Unable to load Demo User orders.');
-      });
-    return () => {
-      active = false;
-    };
+    refreshOrders();
+  }, [refreshOrders]);
+
+  const refreshInventoryViews = useCallback(() => {
+    events.refreshSelectedEvent().catch(() => undefined);
+    events.refreshEvents().catch(() => undefined);
+    demo.refreshDashboard().catch(() => undefined);
+  }, [demo, events]);
+
+  const addTimeline = useCallback((message: string) => {
+    setTimeline((current) => [
+      {
+        id: crypto.randomUUID(),
+        at: new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(new Date()),
+        message
+      },
+      ...current
+    ].slice(0, 12));
   }, []);
 
-  useEffect(() => {
-    if (selectedId === null) {
-      setSelectedEvent(null);
-      return;
-    }
-
-    let active = true;
-    setDetailState('loading');
-    fetchEvent(selectedId)
-      .then((data) => {
-        if (!active) return;
-        setSelectedEvent(data);
-        setDetailState('loaded');
-      })
-      .catch(() => {
-        if (!active) return;
-        setError('Unable to load ticket tiers for the selected event.');
-        setDetailState('error');
-      });
-    return () => {
-      active = false;
-    };
-  }, [selectedId]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!activeOrder || activeOrder.status !== 'PENDING_PAYMENT') return undefined;
-
-    const interval = window.setInterval(() => {
-      fetchOrder(activeOrder.orderNumber)
-        .then((updatedOrder) => {
-          setActiveOrder(updatedOrder);
-          if (updatedOrder.status === 'CANCELLED') {
-            refreshCurrentEvent();
-            refreshOrders();
-          }
-        })
-        .catch(() => setOrderError('Unable to refresh the current order.'));
-    }, 5000);
-
-    return () => window.clearInterval(interval);
-  }, [activeOrder?.orderNumber, activeOrder?.status]);
-
-  const totalAvailable = useMemo(
-    () => selectedEvent?.ticketTiers.reduce((sum, tier) => sum + tier.availableStock, 0) ?? 0,
-    [selectedEvent]
+  const nowMs = useActiveOrderPolling(
+    activeOrder,
+    setActiveOrder,
+    () => {
+      refreshInventoryViews();
+      refreshOrders();
+      addTimeline('Inventory refreshed');
+    },
+    setOrderError
   );
 
   const remainingMs = activeOrder ? new Date(activeOrder.expiresAt).getTime() - nowMs : 0;
 
   function setTierQuantity(ticketTierId: number, quantity: number) {
     setQuantities((current) => ({ ...current, [ticketTierId]: quantity }));
-  }
-
-  function refreshCurrentEvent() {
-    if (selectedId === null) return;
-    fetchEvent(selectedId)
-      .then(setSelectedEvent)
-      .catch(() => setOrderError('Unable to refresh inventory.'));
-    fetchEvents()
-      .then(setEvents)
-      .catch(() => undefined);
-  }
-
-  function refreshOrders() {
-    fetchMyOrders()
-      .then(setOrders)
-      .catch(() => setOrderError('Unable to refresh orders.'));
   }
 
   function reserveTier(ticketTierId: number, existingIntent?: ReservationIntent) {
@@ -194,13 +112,15 @@ function App() {
         setSettledPayment(null);
         setPaymentMessage(null);
         setOrderState('loaded');
-        refreshCurrentEvent();
+        addTimeline(`${order.idempotentReplay ? 'Replayed' : 'Reserved'} ${quantity} ${order.ticketTierCode} ticket`);
+        refreshInventoryViews();
         refreshOrders();
       })
       .catch((exception: Error) => {
         setFailedIntent({ ticketTierId, quantity, idempotencyKey });
         setOrderError(exception.message);
         setOrderState('error');
+        addTimeline('Reservation failed');
       })
       .finally(() => setSubmittingTierId(null));
   }
@@ -215,7 +135,8 @@ function App() {
         setPaymentSession(null);
         setSettledPayment(null);
         setPaymentMessage(null);
-        refreshCurrentEvent();
+        addTimeline('Order cancelled and inventory refreshed');
+        refreshInventoryViews();
         refreshOrders();
       })
       .catch((exception: Error) => setOrderError(exception.message))
@@ -230,7 +151,9 @@ function App() {
     createPaymentSession(activeOrder.orderNumber, crypto.randomUUID())
       .then((session) => {
         setPaymentSession(session);
-        setPaymentMessage('Payment session is ready in the local simulator.');
+        setSettledPayment(null);
+        setPaymentMessage('Payment session created.');
+        addTimeline('Payment session created');
       })
       .catch((exception: Error) => setOrderError(exception.message))
       .finally(() => setPaymentBusy(false));
@@ -251,280 +174,124 @@ function App() {
         setActiveOrder(order);
         setSettledPayment(payment);
         if (order.status === 'PAID') {
-          setPaymentMessage('Payment succeeded. Reserved stock has been converted to sold stock.');
+          setPaymentMessage('Payment succeeded. Reserved stock has moved to sold stock.');
+          addTimeline('Payment succeeded');
         } else {
-          setPaymentMessage('Payment failed. The order remains pending until it is paid, cancelled, or expired.');
+          setPaymentMessage('Payment failed. The order remains pending and stock remains reserved.');
           setPaymentSession(null);
+          addTimeline('Payment failed');
         }
-        refreshCurrentEvent();
+        refreshInventoryViews();
         refreshOrders();
       })
       .catch((exception: Error) => setOrderError(exception.message))
       .finally(() => setPaymentBusy(false));
   }
 
+  function openOrder(orderNumber: string) {
+    fetchOrder(orderNumber)
+      .then((loadedOrder) => {
+        setActiveOrder(loadedOrder);
+        setPaymentSession(null);
+        setSettledPayment(null);
+        setPaymentMessage(null);
+      })
+      .catch(() => setOrderError('Unable to load the selected order.'));
+  }
+
+  function resetDemoData() {
+    if (!window.confirm('This will delete demo orders and payment records. Continue?')) return;
+    demo.resetDashboard()
+      .then(() => {
+        setActiveOrder(null);
+        setPaymentSession(null);
+        setSettledPayment(null);
+        setPaymentMessage(null);
+        setFailedIntent(null);
+        addTimeline('Demo data reset');
+        refreshInventoryViews();
+        refreshOrders();
+      })
+      .catch((exception: Error) => setOrderError(exception.message));
+  }
+
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">TicketForge</p>
-          <h1>TicketForge</h1>
-          <p className="subtitle">High-concurrency ticketing system lab</p>
-        </div>
-        <div className="user-badge">
-          <span>Demo User</span>
-          <strong>user@ticketforge.local</strong>
-        </div>
-      </header>
+      <AppHeader activeTab={activeTab} onTabChange={setActiveTab} />
 
-      <section className="content-grid">
-        <aside className="event-list" aria-label="Events">
-          <div className="section-heading">
-            <h2>Events</h2>
-            <span>{events.length}</span>
-          </div>
-
-          {listState === 'loading' && <p className="state">Loading events...</p>}
-          {listState === 'empty' && <p className="state">No events are available.</p>}
-          {listState === 'error' && <p className="state error">{error}</p>}
-
-          <div className="event-stack">
-            {events.map((event) => (
-              <button
-                className={event.id === selectedId ? 'event-card active' : 'event-card'}
-                key={event.id}
-                onClick={() => setSelectedId(event.id)}
-                type="button"
-              >
-                <span className="status">{event.status}</span>
-                <strong>{event.name}</strong>
-                <span>{event.venue}</span>
-                <span>{formatDate(event.performanceAt)}</span>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="detail-panel" aria-live="polite">
-          {detailState === 'loading' && <p className="state">Loading ticket tiers...</p>}
-          {detailState === 'error' && <p className="state error">{error}</p>}
-
-          {detailState === 'loaded' && selectedEvent && (
-            <>
-              <div className="event-hero">
-                <span className="status">{selectedEvent.status}</span>
-                <h2>{selectedEvent.name}</h2>
-                <p>{selectedEvent.description}</p>
-                <div className="metadata-grid">
-                  <div>
-                    <span>Venue</span>
-                    <strong>{selectedEvent.venue}</strong>
-                  </div>
-                  <div>
-                    <span>Performance</span>
-                    <strong>{formatDate(selectedEvent.performanceAt)}</strong>
-                  </div>
-                  <div>
-                    <span>Sales start</span>
-                    <strong>{formatDate(selectedEvent.salesStartAt)}</strong>
-                  </div>
-                  <div>
-                    <span>Available</span>
-                    <strong>{totalAvailable.toLocaleString()}</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="tiers">
-                {selectedEvent.ticketTiers.map((tier) => {
-                  const quantity = quantities[tier.id] ?? 1;
-                  const isSubmitting = submittingTierId === tier.id;
-                  return (
-                    <article className="tier-row" key={tier.id}>
-                      <div>
-                        <span className="tier-code">{tier.code}</span>
-                        <h3>{tier.name}</h3>
-                      </div>
-                      <div className="purchase-controls">
-                        <div className="tier-metrics">
-                          <span>{currencyFormatter.format(tier.price)}</span>
-                          <strong>{tier.availableStock.toLocaleString()} left</strong>
-                        </div>
-                        <label>
-                          Qty
-                          <select
-                            value={quantity}
-                            onChange={(event) => setTierQuantity(tier.id, Number(event.target.value))}
-                            disabled={isSubmitting}
-                          >
-                            {[1, 2, 3, 4, 5, 6].map((value) => (
-                              <option key={value} value={value}>
-                                {value}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <button
-                          className="primary-action"
-                          type="button"
-                          onClick={() => reserveTier(tier.id)}
-                          disabled={isSubmitting || tier.availableStock <= 0}
-                        >
-                          {isSubmitting ? 'Processing...' : 'Reserve tickets'}
-                        </button>
-                      </div>
-                    </article>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </section>
-
-        <aside className="order-panel" aria-live="polite">
-          <div className="section-heading">
-            <h2>Current Order</h2>
-            <span>{orderState === 'loading' ? 'working' : activeOrder?.status ?? 'none'}</span>
-          </div>
-          {orderError && <p className="state error">{orderError}</p>}
-          {failedIntent && (
-            <button
-              className="secondary-action retry-action"
-              type="button"
-              onClick={() => reserveTier(failedIntent.ticketTierId, failedIntent)}
-              disabled={submittingTierId !== null}
-            >
-              Retry reservation
-            </button>
-          )}
-          {!activeOrder && <p className="state">Reserve a ticket tier to create a pending order.</p>}
-          {activeOrder && (
-            <article className="active-order">
-              <span className="status">{activeOrder.status}</span>
-              <strong>{activeOrder.orderNumber}</strong>
-              <dl>
-                <div>
-                  <dt>Tier</dt>
-                  <dd>{activeOrder.ticketTierName}</dd>
-                </div>
-                <div>
-                  <dt>Quantity</dt>
-                  <dd>{activeOrder.quantity}</dd>
-                </div>
-                <div>
-                  <dt>Total</dt>
-                  <dd>{currencyFormatter.format(activeOrder.totalAmount)}</dd>
-                </div>
-                <div>
-                  <dt>Countdown</dt>
-                  <dd>{activeOrder.status === 'PENDING_PAYMENT' ? formatRemaining(remainingMs) : activeOrder.status === 'PAID' ? 'Paid' : 'Released'}</dd>
-                </div>
-                {activeOrder.paidAt && (
-                  <div>
-                    <dt>Paid at</dt>
-                    <dd>{formatDate(activeOrder.paidAt)}</dd>
-                  </div>
-                )}
-              </dl>
-              {activeOrder.idempotentReplay && <p className="state">Returned from an idempotent replay.</p>}
-              {activeOrder.status === 'CANCELLED' && <p className="state">Inventory has been released.</p>}
-              {activeOrder.status === 'PAID' && <p className="state">Ticket sold. Reserved stock is now sold stock.</p>}
-              {activeOrder.status === 'PENDING_PAYMENT' && (
-                <>
-                  <button
-                    className="primary-action full-width-action"
-                    type="button"
-                    onClick={beginPayment}
-                    disabled={paymentBusy}
-                  >
-                    {paymentBusy && !paymentSession ? 'Creating payment...' : '模拟支付'}
-                  </button>
-                  {paymentSession && (
-                    <div className="payment-box">
-                      <span className="tier-code">Simulator</span>
-                      <dl>
-                        <div>
-                          <dt>Transaction</dt>
-                          <dd>{paymentSession.paymentTransactionId}</dd>
-                        </div>
-                        <div>
-                          <dt>Amount</dt>
-                          <dd>{currencyFormatter.format(paymentSession.amount)}</dd>
-                        </div>
-                        <div>
-                          <dt>Currency</dt>
-                          <dd>{paymentSession.currency}</dd>
-                        </div>
-                      </dl>
-                      <div className="payment-actions">
-                        <button
-                          className="primary-action"
-                          type="button"
-                          onClick={() => settlePayment('success')}
-                          disabled={paymentBusy}
-                        >
-                          Simulate success
-                        </button>
-                        <button
-                          className="secondary-action"
-                          type="button"
-                          onClick={() => settlePayment('failure')}
-                          disabled={paymentBusy}
-                        >
-                          Simulate failure
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    onClick={cancelActiveOrder}
-                    disabled={cancelling || paymentBusy}
-                  >
-                    {cancelling ? 'Cancelling...' : 'Cancel order'}
-                  </button>
-                </>
+      {activeTab === 'purchase' && (
+        <>
+          <DemoGuide />
+          <section className="purchase-layout">
+            <EventList
+              events={events.events}
+              selectedId={events.selectedId}
+              state={events.listState}
+              error={events.error}
+              onSelect={events.setSelectedId}
+            />
+            <div className="main-column">
+              <InventoryOverview selectedEvent={events.selectedEvent} dashboard={demo.dashboard} />
+              <EventDetail
+                event={events.selectedEvent}
+                state={events.detailState}
+                error={events.error}
+                quantities={quantities}
+                submittingTierId={submittingTierId}
+                onQuantityChange={setTierQuantity}
+                onReserve={reserveTier}
+              />
+              {failedIntent && (
+                <button
+                  className="secondary-action full-width-action"
+                  type="button"
+                  onClick={() => reserveTier(failedIntent.ticketTierId, failedIntent)}
+                  disabled={submittingTierId !== null || orderState === 'loading'}
+                >
+                  Retry failed request with same idempotency key
+                </button>
               )}
-              {paymentMessage && <p className="state">{paymentMessage}</p>}
-              {settledPayment?.processedAt && (
-                <p className="state">
-                  {settledPayment.status} via {settledPayment.paymentTransactionId} at {formatDate(settledPayment.processedAt)}
-                </p>
-              )}
-            </article>
-          )}
+            </div>
+            <div className="side-column">
+              <ActiveOrderPanel
+                activeOrder={activeOrder}
+                paymentSession={paymentSession}
+                settledPayment={settledPayment}
+                orderError={orderError}
+                paymentMessage={paymentMessage}
+                paymentBusy={paymentBusy}
+                cancelling={cancelling}
+                remainingMs={remainingMs}
+                onCancel={cancelActiveOrder}
+                onCreatePayment={beginPayment}
+                onSimulateSuccess={() => settlePayment('success')}
+                onSimulateFailure={() => settlePayment('failure')}
+              />
+              <RecentOrders orders={orders} onOpenOrder={openOrder} />
+              <OperationTimeline entries={timeline} />
+            </div>
+          </section>
+        </>
+      )}
 
-          <div className="section-heading orders-heading">
-            <h2>My Orders</h2>
-            <span>{orders.length}</span>
-          </div>
-          <div className="order-list">
-            {orders.length === 0 && <p className="state">No recent orders.</p>}
-            {orders.map((order) => (
-              <button
-                key={order.orderNumber}
-                className="order-list-item"
-                type="button"
-                onClick={() => fetchOrder(order.orderNumber)
-                  .then((loadedOrder) => {
-                    setActiveOrder(loadedOrder);
-                    setPaymentSession(null);
-                    setSettledPayment(null);
-                    setPaymentMessage(null);
-                  })
-                  .catch(() => undefined)}
-              >
-                <strong>{order.orderNumber}</strong>
-                <span>
-                  {order.ticketTierName} / {order.quantity} / {currencyFormatter.format(order.totalAmount)}
-                </span>
-                <span>{order.status}</span>
-              </button>
-            ))}
-          </div>
-        </aside>
-      </section>
+      {activeTab === 'dashboard' && (
+        <AdminDashboard
+          health={demo.health}
+          profile={demo.profile}
+          dashboard={demo.dashboard}
+          state={demo.state}
+          error={demo.error}
+          resetting={demo.resetting}
+          resetMessage={demo.resetMessage}
+          onRefresh={() => {
+            demo.refreshDashboard().catch(() => undefined);
+            refreshOrders();
+          }}
+          onReset={resetDemoData}
+        />
+      )}
+
+      {activeTab === 'how' && <HowItWorks />}
     </main>
   );
 }

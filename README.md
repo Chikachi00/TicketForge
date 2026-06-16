@@ -2,219 +2,206 @@
 
 [English README](README.en.md)
 
-TicketForge 是一个模拟 ePlus、Ticket Pia、大麦等票务平台核心交易流程的高并发票务系统实验项目。当前阶段是 **Phase 4: k6 Load Testing, Observability and PostgreSQL Baseline**。
+TicketForge 是一个高并发票务系统实验项目，用于演示原子库存预占、幂等下单、支付回调、超时取消、并发正确性和可观测性。
 
-本阶段目标是建立可复现的 PostgreSQL 单机基线、k6 正确性/负载脚本、Spring Boot/Micrometer 指标和手动触发的性能测试工作流。仍然不引入 Redis、消息队列、真实支付、JWT、虚拟排队、WebSocket、微服务、Kubernetes、Grafana Server 或 Prometheus Server。
+它不是一个真实商业票务平台，而是一个可以在 2 到 3 分钟内讲清楚核心交易链路的工程作品集项目。PostgreSQL 是库存和订单的最终事实来源；模拟支付仅用于本地开发演示；k6 数据是 CI 正确性测试或本地单机基线，不代表生产承载量。
 
-## 当前功能
+## 核心功能
 
-- 演出、票档、订单、模拟支付链路。
-- PostgreSQL 原子库存预占、取消释放、支付成功 reserved -> sold。
-- 支付回调 HMAC-SHA256 验签与重复回调幂等。
-- `loadtest` profile，默认指向独立数据库 `ticketforge_loadtest`。
-- 仅 `loadtest` profile 暴露 `/api/load-test/*` 管理接口。
-- k6 smoke、order baseline、oversell spike、idempotency retry、payment callback replay、full journey 场景。
-- Actuator 暴露 `health`、`info`、`metrics`、`prometheus`。
-- 低基数业务指标，用于观察订单、库存和支付行为。
+- 浏览演出和票档。
+- 以 Demo User 预占库存并创建 `PENDING_PAYMENT` 订单。
+- 支持用户级幂等下单。
+- 支持取消订单、超时释放库存。
+- 创建本地模拟支付 session。
+- 模拟支付成功或失败。
+- 支付成功后将库存从 `reserved` 转为 `sold`。
+- Demo Dashboard 展示库存、订单、支付和最近订单。
+- Demo reset 安全删除演示订单和支付记录，恢复演示库存。
+- k6 验证并发正确性、超卖保护、幂等重试和支付回调重放。
+- Micrometer / Actuator 暴露健康检查、指标和 Prometheus scrape endpoint。
 
-## 数据库
+## 架构图
 
-普通开发库：
+```mermaid
+flowchart LR
+  React[React + TypeScript] --> API[Spring Boot modular monolith]
+  API --> PG[(PostgreSQL source of truth)]
+  API --> Actuator[Micrometer / Actuator]
+  Flyway[Flyway migrations] --> PG
+  K6[k6 load testing] --> API
+  Actions[GitHub Actions] --> K6
+```
+
+## 2 分钟 Demo 流程
+
+1. 启动 demo：`.\scripts\start-demo.ps1`
+2. 在 `Purchase Demo` 选择票档和数量。
+3. 点击 `Reserve tickets`，观察 `available -> reserved`。
+4. 创建 payment session。
+5. 先模拟支付失败，确认订单仍是 `PENDING_PAYMENT` 且库存保持 reserved。
+6. 再创建 payment session 并模拟支付成功，观察 `reserved -> sold`。
+7. 切换到 `System Dashboard` 查看库存、订单、支付统计和最近订单。
+8. 点击 `Reset demo data`，确认演示订单和支付记录被删除，库存恢复。
+9. 切换到 `How It Works` 讲解事务、幂等、锁顺序和 k6 正确性验证。
+
+## Quick Start
+
+```powershell
+git clone https://github.com/Chikachi00/TicketForge.git
+cd TicketForge
+.\scripts\start-demo.ps1
+```
+
+`start-demo.ps1` 不启动 Docker、Redis 或任何后台隐藏进程。它会检查 Java、Node、npm、PostgreSQL 端口和 8080/5173 占用情况，然后在独立 PowerShell 窗口启动 backend 与 frontend。
+
+## 数据库初始化
+
+本地默认数据库配置：
 
 ```text
-Database: ticketforge
-Username: ticketforge
+URL: jdbc:postgresql://localhost:5432/ticketforge
+User: ticketforge
 Password: ticketforge_dev
 ```
 
-集成测试库：
+如果使用 Docker 基础设施：
+
+```powershell
+docker compose up -d
+```
+
+Flyway migration 位于：
 
 ```text
-Database: ticketforge_test
-Username: ticketforge
-Password: ticketforge_dev
+backend/src/main/resources/db/migration/
 ```
 
-压力测试专用库：
+不要手动修改已执行的 `V1` 到 `V4` migration。应用启动后 Flyway 会自动建表和加载演示数据。
 
-```text
-Database: ticketforge_loadtest
-Username: ticketforge
-Password: ticketforge_dev
-```
+## Demo Profile
 
-不要在普通 `ticketforge` 数据库中运行压力测试。使用 PostgreSQL 管理员账号执行一次：
-
-```sql
-CREATE DATABASE ticketforge_loadtest
-    OWNER ticketforge
-    ENCODING 'UTF8';
-```
-
-不要为了本流程自动授予 `ticketforge` 用户 `CREATE DATABASE` 权限。
-
-## 启动 loadtest 后端
+Backend demo 启动方式：
 
 ```powershell
 cd backend
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=loadtest"
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=demo"
 ```
 
-`backend/src/main/resources/application-loadtest.yml` 会把数据源默认指向 `ticketforge_loadtest`，并把订单过期时间调长到 `PT30M`，避免压测中途被定时取消。
+`application-demo.yml`：
 
-## API
+```yaml
+ticketforge:
+  demo:
+    enabled: true
+    secret: ${TICKETFORGE_DEMO_SECRET:ticketforge-local-demo-secret}
+```
 
-业务 API：
+Demo 管理 API 只在 `demo` profile 且非 `prod` 时存在，并要求：
 
 ```http
-GET /api/events
-GET /api/events/{eventId}
-GET /api/events/slug/{slug}
-POST /api/orders
-GET /api/orders/{orderNumber}
-GET /api/orders/me
-POST /api/orders/{orderNumber}/cancel
-POST /api/payments/orders/{orderNumber}
-GET /api/payments/{paymentTransactionId}
-POST /api/payments/callback
-POST /api/payment-simulator/{paymentTransactionId}/success
-POST /api/payment-simulator/{paymentTransactionId}/failure
+X-Demo-Secret: ticketforge-local-demo-secret
 ```
 
-loadtest 管理 API 仅在 `loadtest` profile 可用，并要求：
+这个默认值只用于本地演示。生产环境不得用前端环境变量暴露管理 secret。
 
-```http
-X-Load-Test-Secret: ticketforge-local-loadtest-secret
-```
+## API 链接
 
-```http
-GET /api/load-test/profile
-POST /api/load-test/reset
-GET /api/load-test/state?eventSlug=ticketforge-load-test-live
-```
+- `GET /api/events`
+- `GET /api/events/{eventId}`
+- `GET /api/events/slug/{slug}`
+- `POST /api/orders`
+- `GET /api/orders/me`
+- `GET /api/orders/{orderNumber}`
+- `POST /api/orders/{orderNumber}/cancel`
+- `POST /api/payments/orders/{orderNumber}`
+- `GET /api/payments/{paymentTransactionId}`
+- `POST /api/payment-simulator/{paymentTransactionId}/success`
+- `POST /api/payment-simulator/{paymentTransactionId}/failure`
+- `GET /api/demo/profile`
+- `GET /api/demo/dashboard`
+- `POST /api/demo/reset`
+- `GET /actuator/health`
+- `GET /actuator/metrics`
+- `GET /actuator/prometheus`
 
-`reset` 只影响专用 load-test 演出、订单、支付记录和 `loadtest-user-*@ticketforge.local` 用户，不删除普通 demo 数据。
+## 并发正确性结果
 
-## Metrics
+最新报告见 [docs/performance/correctness-ci.md](docs/performance/correctness-ci.md)。
 
-Actuator：
+当前本地 summary 显示 oversell spike：
 
 ```text
-/actuator/health
-/actuator/info
-/actuator/metrics
-/actuator/prometheus
+50 concurrent order attempts
+20 tickets
+20 successful reservations
+30 expected OUT_OF_STOCK
+0 oversell
+0 inventory inconsistency
+P95 around 329.27 ms in the recorded local summary
 ```
 
-不会暴露 `/env`、`/configprops`、`/beans`、`/heapdump`。
+This is a small GitHub Actions correctness run, not a production capacity benchmark.
 
-业务指标：
+## 技术亮点
+
+- PostgreSQL 条件更新实现原子库存预占。
+- 用户与幂等键唯一约束防止重复下单。
+- 订单、库存、支付回调在事务内保持一致。
+- 支付回调按 provider event 做幂等重放保护。
+- Dashboard 服务端计算库存守恒：`available + reserved + sold = total`。
+- Demo reset 只影响 `ticketforge-opening-live` 演示演出。
+- k6 将预期 `OUT_OF_STOCK` 409 与真实异常区分统计。
+- Micrometer 使用低基数业务 tag，避免订单号、邮箱和交易号进入 metrics tag。
+
+## 项目结构
 
 ```text
-ticketforge_orders_created_total
-ticketforge_orders_idempotent_replay_total
-ticketforge_orders_rejected_total
-ticketforge_inventory_reserved_total
-ticketforge_inventory_released_total
-ticketforge_payments_success_total
-ticketforge_payments_failed_total
-ticketforge_payment_callback_replay_total
-ticketforge_order_reservation_duration
-ticketforge_payment_callback_duration
+backend/      Spring Boot modular monolith
+frontend/     React + TypeScript + Vite demo UI
+load-tests/   k6 scenarios and report scripts
+docs/         architecture, demo walkthrough and correctness report
+scripts/      local demo startup helpers
+compose.yaml  PostgreSQL, Redis and Adminer for local infrastructure
 ```
 
-指标标签只使用低基数字段，如 `result`、`status`、`reason`、`ticket_tier_code`。禁止把 `orderNumber`、`paymentTransactionId`、`email`、`idempotencyKey`、`providerEventId`、`userId` 放进 metrics tag。
-
-## k6
-
-本地使用原生 Windows k6，不使用 Docker：
-
-```powershell
-k6 version
-```
-
-如果未安装：
-
-```powershell
-winget install k6 --source winget
-```
-
-运行：
-
-```powershell
-cd load-tests
-.\scripts\run-smoke.ps1
-.\scripts\run-correctness.ps1
-.\scripts\run-baseline.ps1
-```
-
-场景：
-
-- `smoke.js`: health、events、下单、查单、创建支付、模拟支付成功、查最终状态。
-- `order-baseline.js`: 稳定下单基线，不支付，不测试售罄。
-- `oversell-spike.js`: 小库存大并发，验证无超卖和无负库存。
-- `idempotency-retry.js`: 同一用户同一 `Idempotency-Key` 并发重试。
-- `payment-callback-replay.js`: 完全相同成功回调并发重复到达。
-- `full-journey.js`: 查询演出 -> 下单 -> 支付会话 -> 模拟成功 -> 查单。
-
-严格正确性阈值：
-
-```text
-oversell_detected count == 0
-inventory_inconsistent count == 0
-duplicate_order_detected count == 0
-duplicate_payment_processing_detected count == 0
-unexpected_error count == 0
-```
-
-临时性能保护线：
-
-```text
-http_req_duration p(95) < 3000ms
-http_req_duration p(99) < 5000ms
-```
-
-These are provisional guardrails, not production SLOs.
-
-`OUT_OF_STOCK` 在 oversell spike 中是正常业务结果，不是系统错误。其他 409、5xx、无效 JSON、负库存、库存不守恒和超卖都是失败。
-
-## 报告
-
-模板：
-
-```text
-docs/performance/baseline-template.md
-load-tests/reports/baseline-template.md
-```
-
-只有实际运行成功后才创建 `docs/performance/baseline.md`。不得编造 RPS、P50、P95、P99 或任何性能数字。
-
-## 测试
+## 测试命令
 
 ```powershell
 cd backend
 .\mvnw.cmd test
 .\mvnw.cmd verify -Pintegration
-```
 
-```powershell
-cd frontend
+cd ..\frontend
 npm ci
 npm run build
+
+cd ..\load-tests
+k6 inspect scenarios/smoke.js
+k6 inspect scenarios/order-baseline.js
+k6 inspect scenarios/oversell-spike.js
+k6 inspect scenarios/idempotency-retry.js
+k6 inspect scenarios/payment-callback-replay.js
+k6 inspect scenarios/full-journey.js
+.\scripts\generate-correctness-report.ps1
 ```
 
-## GitHub Actions
+## 限制与 Roadmap
 
-- `.github/workflows/ci.yml`: push 和 pull_request 时运行后端/前端测试。
-- `.github/workflows/performance.yml`: 仅 `workflow_dispatch` 手动触发，使用 PostgreSQL 17 service 和低规模 k6 correctness，不作为真实性能基线。
+当前 Portfolio v1 已完成演示闭环。暂不实现 Redis、Redis Lua、分布式锁、虚拟排队、消息队列、JWT、真实支付、退款、WebSocket/SSE、微服务、Kubernetes、Prometheus Server、Grafana Server、选座、二维码票。
 
-## 未实现
+后续如果继续扩展，优先级应是：
 
-- Redis、Redis Lua、Redis 分布式锁
-- 虚拟排队
-- 消息队列
-- 真实支付和退款
-- JWT 登录
-- WebSocket/SSE
-- 微服务、Kubernetes
-- Grafana Server、Prometheus Server
+1. 把 CI 集成测试迁移到稳定 Testcontainers。
+2. 增加更完整的订单过期后台任务观测。
+3. 在明确需求后再引入 Redis 队列或临时预占层。
+4. 基于真实瓶颈再做性能优化，而不是提前微服务化。
+
+## Git 提交规范
+
+- `feat:` 新功能
+- `fix:` 修复
+- `perf:` 性能或压测相关
+- `docs:` 文档
+- `test:` 测试
+
+TicketForge Portfolio v1 - Complete.

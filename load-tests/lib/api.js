@@ -11,6 +11,14 @@ export function headers(extra = {}) {
   };
 }
 
+export function orderCreateRequestOptions(extraHeaders = {}, tags = { name: 'order-create' }) {
+  return {
+    headers: headers(extraHeaders),
+    tags,
+    responseCallback: http.expectedStatuses(200, 201, 409)
+  };
+}
+
 export function loadTestHeaders() {
   return headers({ 'X-Load-Test-Secret': config.loadTestSecret });
 }
@@ -60,11 +68,10 @@ export function eventBySlug(slug = config.eventSlug) {
 
 export function createOrder(userEmail, ticketTierId, idempotencyKey, quantity = 1) {
   return http.post(`${config.baseUrl}/api/orders`, JSON.stringify({ ticketTierId, quantity }), {
-    headers: headers({
+    ...orderCreateRequestOptions({
       'X-User-Email': userEmail,
       'Idempotency-Key': idempotencyKey
-    }),
-    tags: { name: 'order-create' }
+    })
   });
 }
 

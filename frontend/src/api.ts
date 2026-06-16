@@ -1,106 +1,27 @@
-export type TicketTierSummary = {
-  id: number;
-  code: string;
-  name: string;
-  price: number;
-  totalStock: number;
-  availableStock: number;
-};
+import {
+  DemoDashboard,
+  DemoProfile,
+  DemoResetResponse,
+  EventDetail,
+  EventSummary,
+  OrderResponse,
+  OrderSummary,
+  PaymentCallbackResponse,
+  PaymentQueryResponse,
+  PaymentSessionResponse
+} from './types';
 
-export type TicketTierDetail = TicketTierSummary & {
-  reservedStock: number;
-  soldStock: number;
-};
+export const DEMO_USER_EMAIL = 'user@ticketforge.local';
+export const DEMO_SECRET = import.meta.env.VITE_DEMO_SECRET ?? 'ticketforge-local-demo-secret';
 
-export type EventSummary = {
-  id: number;
-  slug: string;
-  name: string;
-  venue: string;
-  description: string | null;
-  performanceAt: string;
-  salesStartAt: string;
-  status: string;
-  ticketTiers: TicketTierSummary[];
-};
-
-export type EventDetail = Omit<EventSummary, 'ticketTiers'> & {
-  ticketTiers: TicketTierDetail[];
-};
-
-export type OrderResponse = {
-  orderNumber: string;
-  eventId: number;
-  eventName: string;
-  ticketTierId: number;
-  ticketTierCode: string;
-  ticketTierName: string;
-  quantity: number;
-  unitPrice: number;
-  totalAmount: number;
-  status: string;
-  expiresAt: string;
-  cancelledAt: string | null;
-  paidAt: string | null;
-  createdAt: string;
-  idempotentReplay: boolean;
-};
-
-export type OrderSummary = {
-  orderNumber: string;
-  eventName: string;
-  ticketTierCode: string;
-  ticketTierName: string;
-  quantity: number;
-  totalAmount: number;
-  status: string;
-  expiresAt: string;
-  cancelledAt: string | null;
-  paidAt: string | null;
-  createdAt: string;
-};
-
-const DEMO_USER_EMAIL = 'user@ticketforge.local';
-
-export type PaymentSessionResponse = {
-  paymentTransactionId: string;
-  orderNumber: string;
-  amount: number;
-  currency: string;
-  status: string;
-  createdAt: string;
-};
-
-export type PaymentQueryResponse = PaymentSessionResponse & {
-  provider: string;
-  processedAt: string | null;
-};
-
-export type PaymentCallbackResponse = {
-  providerEventId: string;
-  paymentTransactionId: string;
-  orderNumber: string;
-  status: string;
-  idempotentReplay: boolean;
-  processedAt: string | null;
-};
-
-async function requestJson<T>(path: string): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
+    ...init,
     headers: {
-      Accept: 'application/json'
+      Accept: 'application/json',
+      ...init?.headers
     }
   });
-
-  if (!response.ok) {
-    throw new Error(`Request failed with status ${response.status}`);
-  }
-
-  return response.json() as Promise<T>;
-}
-
-async function sendJson<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
 
   if (!response.ok) {
     let message = `Request failed with status ${response.status}`;
@@ -116,6 +37,28 @@ async function sendJson<T>(path: string, init: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function jsonHeaders(extra?: HeadersInit): HeadersInit {
+  return {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    ...extra
+  };
+}
+
+function userHeaders(extra?: HeadersInit): HeadersInit {
+  return jsonHeaders({
+    'X-User-Email': DEMO_USER_EMAIL,
+    ...extra
+  });
+}
+
+function demoHeaders(): HeadersInit {
+  return {
+    Accept: 'application/json',
+    'X-Demo-Secret': DEMO_SECRET
+  };
+}
+
 export function fetchEvents(): Promise<EventSummary[]> {
   return requestJson<EventSummary[]>('/api/events');
 }
@@ -124,86 +67,80 @@ export function fetchEvent(eventId: number): Promise<EventDetail> {
   return requestJson<EventDetail>(`/api/events/${eventId}`);
 }
 
-export function createOrder(ticketTierId: number, quantity: number, idempotencyKey: string): Promise<OrderResponse> {
-  return sendJson<OrderResponse>('/api/orders', {
+export function fetchHealth(): Promise<{ status: string }> {
+  return requestJson<{ status: string }>('/actuator/health');
+}
+
+export function fetchDemoProfile(): Promise<DemoProfile> {
+  return requestJson<DemoProfile>('/api/demo/profile', {
+    headers: demoHeaders()
+  });
+}
+
+export function fetchDemoDashboard(): Promise<DemoDashboard> {
+  return requestJson<DemoDashboard>('/api/demo/dashboard', {
+    headers: demoHeaders()
+  });
+}
+
+export function resetDemoData(): Promise<DemoResetResponse> {
+  return requestJson<DemoResetResponse>('/api/demo/reset', {
     method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-      'X-User-Email': DEMO_USER_EMAIL,
-      'Idempotency-Key': idempotencyKey
-    },
+    headers: demoHeaders()
+  });
+}
+
+export function createOrder(ticketTierId: number, quantity: number, idempotencyKey: string): Promise<OrderResponse> {
+  return requestJson<OrderResponse>('/api/orders', {
+    method: 'POST',
+    headers: userHeaders({ 'Idempotency-Key': idempotencyKey }),
     body: JSON.stringify({ ticketTierId, quantity })
   });
 }
 
 export function fetchOrder(orderNumber: string): Promise<OrderResponse> {
-  return sendJson<OrderResponse>(`/api/orders/${orderNumber}`, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'X-User-Email': DEMO_USER_EMAIL
-    }
+  return requestJson<OrderResponse>(`/api/orders/${orderNumber}`, {
+    headers: userHeaders()
   });
 }
 
 export function fetchMyOrders(): Promise<OrderSummary[]> {
-  return sendJson<OrderSummary[]>('/api/orders/me', {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'X-User-Email': DEMO_USER_EMAIL
-    }
+  return requestJson<OrderSummary[]>('/api/orders/me', {
+    headers: userHeaders()
   });
 }
 
 export function cancelOrder(orderNumber: string): Promise<OrderResponse> {
-  return sendJson<OrderResponse>(`/api/orders/${orderNumber}/cancel`, {
+  return requestJson<OrderResponse>(`/api/orders/${orderNumber}/cancel`, {
     method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'X-User-Email': DEMO_USER_EMAIL
-    }
+    headers: userHeaders()
   });
 }
 
 export function createPaymentSession(orderNumber: string, idempotencyKey: string): Promise<PaymentSessionResponse> {
-  return sendJson<PaymentSessionResponse>(`/api/payments/orders/${orderNumber}`, {
+  return requestJson<PaymentSessionResponse>(`/api/payments/orders/${orderNumber}`, {
     method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'X-User-Email': DEMO_USER_EMAIL,
-      'Idempotency-Key': idempotencyKey
-    }
+    headers: userHeaders({ 'Idempotency-Key': idempotencyKey })
   });
 }
 
 export function fetchPayment(paymentTransactionId: string): Promise<PaymentQueryResponse> {
-  return sendJson<PaymentQueryResponse>(`/api/payments/${paymentTransactionId}`, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'X-User-Email': DEMO_USER_EMAIL
-    }
+  return requestJson<PaymentQueryResponse>(`/api/payments/${paymentTransactionId}`, {
+    headers: userHeaders()
   });
 }
 
 export function simulatePaymentSuccess(paymentTransactionId: string): Promise<PaymentCallbackResponse> {
-  return sendJson<PaymentCallbackResponse>(`/api/payment-simulator/${paymentTransactionId}/success`, {
+  return requestJson<PaymentCallbackResponse>(`/api/payment-simulator/${paymentTransactionId}/success`, {
     method: 'POST',
-    headers: {
-      Accept: 'application/json'
-    }
+    headers: jsonHeaders()
   });
 }
 
 export function simulatePaymentFailure(paymentTransactionId: string): Promise<PaymentCallbackResponse> {
-  return sendJson<PaymentCallbackResponse>(`/api/payment-simulator/${paymentTransactionId}/failure`, {
+  return requestJson<PaymentCallbackResponse>(`/api/payment-simulator/${paymentTransactionId}/failure`, {
     method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
+    headers: jsonHeaders(),
     body: JSON.stringify({ reason: 'SIMULATED_PAYMENT_DECLINED' })
   });
 }

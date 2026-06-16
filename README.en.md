@@ -2,122 +2,182 @@
 
 [中文 README](README.md)
 
-TicketForge is a high-concurrency ticketing-system lab inspired by ePlus, Ticket Pia, Damai, and similar platforms. The current stage is **Phase 4: k6 Load Testing, Observability and PostgreSQL Baseline**.
+TicketForge is a high-concurrency ticketing-system lab that demonstrates atomic inventory reservation, idempotent ordering, payment callbacks, expiration handling, concurrency correctness and observability.
 
-Phase 4 adds a dedicated `loadtest` Spring profile, native Windows k6 scenarios, low-cardinality Micrometer business metrics, and a reproducible PostgreSQL baseline workflow. It still does not add Redis, message queues, real payment providers, JWT, virtual queueing, WebSocket, microservices, Kubernetes, Grafana Server, or Prometheus Server.
+It is not a real commercial ticketing platform. It is a portfolio project designed to demonstrate the core transaction path in 2 to 3 minutes. PostgreSQL is the source of truth for inventory and orders. The payment flow is a local simulator. k6 data is from CI correctness checks or local single-machine baselines, not a production capacity claim.
 
-## Databases
+## Core Features
+
+- Browse events and ticket tiers.
+- Reserve inventory and create `PENDING_PAYMENT` orders as Demo User.
+- User-scoped idempotent ordering.
+- Cancel and expire pending orders.
+- Create local simulated payment sessions.
+- Simulate payment success or failure.
+- Move inventory from `reserved` to `sold` after successful payment.
+- Demo Dashboard for inventory, orders, payments and recent orders.
+- Safe demo reset for the demo event only.
+- k6 checks for concurrency correctness, oversell prevention, idempotency retry and payment callback replay.
+- Micrometer / Actuator endpoints for health, metrics and Prometheus.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  React[React + TypeScript] --> API[Spring Boot modular monolith]
+  API --> PG[(PostgreSQL source of truth)]
+  API --> Actuator[Micrometer / Actuator]
+  Flyway[Flyway migrations] --> PG
+  K6[k6 load testing] --> API
+  Actions[GitHub Actions] --> K6
+```
+
+## 2-Minute Demo
+
+1. Start the demo with `.\scripts\start-demo.ps1`.
+2. Open `Purchase Demo`, choose a tier and quantity.
+3. Reserve tickets and observe `available -> reserved`.
+4. Create a payment session.
+5. Simulate payment failure and confirm the order stays `PENDING_PAYMENT`.
+6. Create another session and simulate success; observe `reserved -> sold`.
+7. Open `System Dashboard` to inspect inventory, orders, payments and recent orders.
+8. Reset demo data and verify inventory is restored.
+9. Open `How It Works` to explain transactions, idempotency, lock ordering and k6 correctness.
+
+## Quick Start
+
+```powershell
+git clone https://github.com/Chikachi00/TicketForge.git
+cd TicketForge
+.\scripts\start-demo.ps1
+```
+
+The script does not start Docker or Redis. It checks the local environment, launches backend and frontend in separate PowerShell windows, waits for health/profile checks, then opens `http://localhost:5173`.
+
+## Database
+
+Local defaults:
 
 ```text
-Development: ticketforge
-Integration: ticketforge_test
-Load test:   ticketforge_loadtest
-Username:    ticketforge
-Password:    ticketforge_dev
+URL: jdbc:postgresql://localhost:5432/ticketforge
+User: ticketforge
+Password: ticketforge_dev
 ```
 
-Create the load-test database once with a PostgreSQL administrator account:
+Optional local infrastructure:
 
-```sql
-CREATE DATABASE ticketforge_loadtest
-    OWNER ticketforge
-    ENCODING 'UTF8';
+```powershell
+docker compose up -d
 ```
 
-Do not run load tests against the normal `ticketforge` database.
+Flyway SQL files live in:
 
-## Run Loadtest Backend
+```text
+backend/src/main/resources/db/migration/
+```
+
+Do not modify already-applied `V1` to `V4` migrations.
+
+## Demo Profile
 
 ```powershell
 cd backend
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=loadtest"
+.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=demo"
 ```
 
-`application-loadtest.yml` points to `ticketforge_loadtest` and extends reservation TTL to `PT30M`.
-
-## Load-Test APIs
-
-Only available in the `loadtest` profile:
+Demo management APIs exist only in the `demo` profile and not in `prod`. They require:
 
 ```http
-GET /api/load-test/profile
-POST /api/load-test/reset
-GET /api/load-test/state?eventSlug=ticketforge-load-test-live
+X-Demo-Secret: ticketforge-local-demo-secret
 ```
 
-All require:
+The default secret is for local demos only. Do not expose production management secrets through frontend variables.
 
-```http
-X-Load-Test-Secret: ticketforge-local-loadtest-secret
-```
+## API Links
 
-Reset affects only the dedicated load-test event, related orders/payments, and `loadtest-user-*@ticketforge.local` users.
+- `GET /api/events`
+- `GET /api/events/{eventId}`
+- `GET /api/events/slug/{slug}`
+- `POST /api/orders`
+- `GET /api/orders/me`
+- `GET /api/orders/{orderNumber}`
+- `POST /api/orders/{orderNumber}/cancel`
+- `POST /api/payments/orders/{orderNumber}`
+- `GET /api/payments/{paymentTransactionId}`
+- `POST /api/payment-simulator/{paymentTransactionId}/success`
+- `POST /api/payment-simulator/{paymentTransactionId}/failure`
+- `GET /api/demo/profile`
+- `GET /api/demo/dashboard`
+- `POST /api/demo/reset`
+- `GET /actuator/health`
+- `GET /actuator/metrics`
+- `GET /actuator/prometheus`
 
-## Observability
+## Correctness Results
 
-Actuator exposes:
+See [docs/performance/correctness-ci.md](docs/performance/correctness-ci.md).
+
+Current local summaries show the oversell spike check:
 
 ```text
-/actuator/health
-/actuator/info
-/actuator/metrics
-/actuator/prometheus
+50 concurrent order attempts
+20 tickets
+20 successful reservations
+30 expected OUT_OF_STOCK
+0 oversell
+0 inventory inconsistency
+P95 around 329.27 ms in the recorded local summary
 ```
 
-Business metrics include order creation, idempotent replay, rejection, inventory reserve/release, payment success/failure, callback replay, and order/payment durations. Metric tags are intentionally low cardinality. Do not tag metrics with order numbers, payment transaction ids, emails, idempotency keys, provider event ids, or user ids.
+This is a small GitHub Actions correctness run, not a production capacity benchmark.
 
-## k6
+## Technical Highlights
 
-Install native k6 on Windows:
+- Atomic inventory reservation through PostgreSQL conditional updates.
+- Unique user/idempotency-key constraint for duplicate-order prevention.
+- Transactional consistency between orders, inventory and payment callbacks.
+- Idempotent payment callback replay handling.
+- Server-calculated inventory invariant: `available + reserved + sold = total`.
+- Demo reset limited to `ticketforge-opening-live`.
+- k6 treats expected `OUT_OF_STOCK` 409 responses separately from real errors.
+- Low-cardinality Micrometer business metrics.
+
+## Project Structure
+
+```text
+backend/      Spring Boot modular monolith
+frontend/     React + TypeScript + Vite demo UI
+load-tests/   k6 scenarios and report scripts
+docs/         architecture, demo walkthrough and correctness report
+scripts/      local demo startup helpers
+compose.yaml  PostgreSQL, Redis and Adminer for local infrastructure
+```
+
+## Tests
 
 ```powershell
-winget install k6 --source winget
-k6 version
+cd backend
+.\mvnw.cmd test
+.\mvnw.cmd verify -Pintegration
+
+cd ..\frontend
+npm ci
+npm run build
+
+cd ..\load-tests
+k6 inspect scenarios/smoke.js
+k6 inspect scenarios/order-baseline.js
+k6 inspect scenarios/oversell-spike.js
+k6 inspect scenarios/idempotency-retry.js
+k6 inspect scenarios/payment-callback-replay.js
+k6 inspect scenarios/full-journey.js
+.\scripts\generate-correctness-report.ps1
 ```
 
-Run:
+## Limits and Roadmap
 
-```powershell
-cd load-tests
-.\scripts\run-smoke.ps1
-.\scripts\run-correctness.ps1
-.\scripts\run-baseline.ps1
-```
+TicketForge Portfolio v1 is complete. The project intentionally does not include Redis, Redis Lua, distributed locks, virtual queues, message queues, JWT, real payment, refunds, WebSocket/SSE, microservices, Kubernetes, Prometheus Server, Grafana Server, seat selection or QR tickets.
 
-Scenarios:
+Future work should prioritize stable Testcontainers integration tests, better expiration observability and Redis only after there is a clear need.
 
-- Smoke
-- Order baseline
-- Oversell spike
-- Idempotency retry
-- Payment callback replay
-- Full journey
-
-Strict correctness thresholds require zero oversell, zero inventory inconsistency, zero duplicate order processing, zero duplicate payment processing, and zero unexpected errors.
-
-Provisional performance guardrails:
-
-```text
-http_req_duration p(95) < 3000ms
-http_req_duration p(99) < 5000ms
-```
-
-These are provisional guardrails, not production SLOs.
-
-`OUT_OF_STOCK` is an expected business result after stock is exhausted in spike scenarios. Other 409 responses, 5xx responses, invalid JSON, negative inventory, oversell, or invariant failures are test failures.
-
-## Reports
-
-Templates:
-
-```text
-docs/performance/baseline-template.md
-load-tests/reports/baseline-template.md
-```
-
-Create `docs/performance/baseline.md` only after a real successful local run. Do not invent RPS, P50, P95, P99, or any performance number.
-
-## GitHub Actions
-
-- `ci.yml`: normal push and pull request checks.
-- `performance.yml`: manual `workflow_dispatch` only. It runs low-scale k6 smoke/correctness against PostgreSQL 17 and uploads summaries. It is not a real production baseline.
+TicketForge Portfolio v1 - Complete.
