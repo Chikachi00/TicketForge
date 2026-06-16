@@ -1,13 +1,25 @@
 package io.github.chikachi.ticketforge.demo.application;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isA;
+import org.mockito.Mock;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import org.mockito.MockitoAnnotations;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.RowMapper;
 
 import io.github.chikachi.ticketforge.demo.api.DemoDashboardResponse;
 import io.github.chikachi.ticketforge.demo.api.DemoEventResponse;
@@ -16,17 +28,6 @@ import io.github.chikachi.ticketforge.demo.api.DemoOrderStatsResponse;
 import io.github.chikachi.ticketforge.demo.api.DemoPaymentStatsResponse;
 import io.github.chikachi.ticketforge.demo.api.DemoResetResponse;
 import io.github.chikachi.ticketforge.demo.api.DemoTicketTierInventoryResponse;
-import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneOffset;
-import java.util.List;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 
 class DemoApplicationServiceTest {
 
@@ -112,7 +113,8 @@ class DemoApplicationServiceTest {
 
         assertThat(response.recentOrders()).hasSize(10);
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, atLeastOnce()).query(sql.capture(), any(RowMapper.class), any());
+        verify(jdbcTemplate, atLeastOnce())
+                .query(sql.capture(), any(RowMapper.class), any());       
         assertThat(sql.getAllValues()).anySatisfy(statement ->
                 assertThat(statement)
                         .contains("WHERE o.event_id = ?")
@@ -164,9 +166,15 @@ class DemoApplicationServiceTest {
 
         service.reset();
 
-        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
-        verify(jdbcTemplate, atLeastOnce()).update(sql.capture(), any(), any());
-        assertThat(sql.getAllValues()).anySatisfy(statement ->
+        List<String> updateStatements = org.mockito.Mockito
+                .mockingDetails(jdbcTemplate)
+                .getInvocations()
+                .stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("update"))
+                .map(invocation -> (String) invocation.getArgument(0))
+                .toList();
+
+        assertThat(updateStatements).anySatisfy(statement ->
                 assertThat(statement)
                         .contains("available_stock = tt.total_stock")
                         .contains("reserved_stock = 0")
@@ -175,7 +183,7 @@ class DemoApplicationServiceTest {
                         .doesNotContain("TRUNCATE")
                         .doesNotContain("ALTER SEQUENCE")
         );
-    }
+}
 
     @Test
     void resetIsRepeatableWhenThereAreNoOrders() {
